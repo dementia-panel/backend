@@ -4,9 +4,27 @@
 
 ## English
 
-### 1. Download the deployment files
+### 1. Install Docker
 
-Create a folder for the deployment and run the following commands from that folder. You need Docker with Compose v2, curl, and OpenSSL.
+If Docker is missing on a Linux test host, install Docker Engine with the Compose plugin:
+
+```sh
+curl -fsSL https://get.docker.com | sudo sh
+```
+
+For a production server, use Docker's package repository. If your Docker installation requires elevated permissions, run the Compose commands with `sudo`. [Docker Engine installation](https://docs.docker.com/engine/install/)
+
+### 2. Download the deployment files
+
+Create and enter the deployment directory. The next steps use curl and OpenSSL.
+
+```sh
+mkdir -p dementia
+```
+
+```sh
+cd dementia
+```
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/compose.yaml
@@ -16,7 +34,7 @@ curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/depl
 curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/.env.example -o .env
 ```
 
-### 2. Fill in `.env`
+### 3. Fill in `.env`
 
 | Variable | Value |
 | --- | --- |
@@ -45,7 +63,7 @@ openssl rand -base64 32
 
 Keep `.env` outside version control.
 
-### 3. Start the backend
+### 4. Start the backend
 
 Compose starts PostgreSQL and Valkey as dependencies. The backend applies database migrations on startup.
 
@@ -53,15 +71,33 @@ Compose starts PostgreSQL and Valkey as dependencies. The backend applies databa
 docker compose up -d --pull always --wait backend
 ```
 
-### 4. Start the panel
+### 5. Start the panel
 
 Continue with the panel setup in the same deployment folder. [Panel installation](https://github.com/dementia-panel/panel#english)
 
 ## Русский
 
-### 1. Скачай файлы установки
+### 1. Установи Docker
 
-Создай папку для установки и выполни следующие команды в этой папке. Понадобятся Docker с Compose v2, curl и OpenSSL.
+Если на тестовой Linux-машине ещё нет Docker, установи Docker Engine с плагином Compose:
+
+```sh
+curl -fsSL https://get.docker.com | sudo sh
+```
+
+Для рабочего сервера используй репозиторий пакетов Docker. Если твоя установка Docker требует повышенных прав, запускай команды Compose через `sudo`. [Установка Docker Engine](https://docs.docker.com/engine/install/)
+
+### 2. Скачай файлы установки
+
+Создай папку для установки и перейди в неё. Для следующих шагов нужны curl и OpenSSL.
+
+```sh
+mkdir -p dementia
+```
+
+```sh
+cd dementia
+```
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/compose.yaml
@@ -71,7 +107,7 @@ curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/depl
 curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/.env.example -o .env
 ```
 
-### 2. Заполни `.env`
+### 3. Заполни `.env`
 
 | Переменная | Значение |
 | --- | --- |
@@ -100,7 +136,7 @@ openssl rand -base64 32
 
 Храни `.env` вне Git.
 
-### 3. Запусти backend
+### 4. Запусти backend
 
 Compose автоматически запустит PostgreSQL и Valkey. Backend применит миграции базы при старте.
 
@@ -108,6 +144,6 @@ Compose автоматически запустит PostgreSQL и Valkey. Backen
 docker compose up -d --pull always --wait backend
 ```
 
-### 4. Запусти панель
+### 5. Запусти панель
 
 Продолжи настройку панели в той же папке установки. [Установка панели](https://github.com/dementia-panel/panel#русский)
