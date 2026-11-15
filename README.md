@@ -47,19 +47,33 @@ curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Set both to enable Telegram. `TELEGRAM_THREAD_ID` is optional. |
 | `TELEGRAM_MODE`, `TELEGRAM_WEBHOOK_SECRET` | Keep `polling` by default. Set a secret if you select `webhook`. |
 
-Generate a PostgreSQL password:
+On a fresh installation, run these commands in the directory containing `.env`. Each writes a new value directly into the file. The two keys use standard Base64, including the trailing `=`.
 
 ```sh
-openssl rand -hex 32
+postgres_password="$(openssl rand -hex 32)" && sed -i "s|^POSTGRES_PASSWORD=.*$|POSTGRES_PASSWORD=$postgres_password|" .env
 ```
-
-Run the next command twice, once for each key:
 
 ```sh
-openssl rand -base64 32
+jwt_key="$(openssl rand -base64 32)" && sed -i "s|^JWT_SIGNING_KEY=.*$|JWT_SIGNING_KEY=$jwt_key|" .env
 ```
 
-Keep `.env` outside version control.
+```sh
+encryption_key="$(openssl rand -base64 32)" && sed -i "s|^ENCRYPTION_KEY=.*$|ENCRYPTION_KEY=$encryption_key|" .env
+```
+
+If you set `WEBHOOK_URL`, generate the webhook secret:
+
+```sh
+webhook_secret="$(openssl rand -hex 32)" && sed -i "s|^WEBHOOK_SECRET_HEADER=.*$|WEBHOOK_SECRET_HEADER=$webhook_secret|" .env
+```
+
+If you select `TELEGRAM_MODE=webhook`, generate the Telegram webhook secret. Get `TELEGRAM_BOT_TOKEN` from BotFather.
+
+```sh
+telegram_webhook_secret="$(openssl rand -hex 32)" && sed -i "s|^TELEGRAM_WEBHOOK_SECRET=.*$|TELEGRAM_WEBHOOK_SECRET=$telegram_webhook_secret|" .env
+```
+
+Keep `.env` outside version control. For an existing installation, preserve the PostgreSQL password and encryption key unless you are deliberately rotating them.
 
 ### 4. Start the backend
 
@@ -118,19 +132,33 @@ curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Заполни оба поля для подключения Telegram. `TELEGRAM_THREAD_ID` необязателен. |
 | `TELEGRAM_MODE`, `TELEGRAM_WEBHOOK_SECRET` | По умолчанию оставь `polling`. Если выбран `webhook`, укажи секрет. |
 
-Сгенерируй пароль PostgreSQL:
+При первой установке выполни команды в папке с `.env`. Каждая команда записывает новое значение прямо в файл. Оба ключа записываются в стандартном Base64 вместе с завершающим знаком `=`.
 
 ```sh
-openssl rand -hex 32
+postgres_password="$(openssl rand -hex 32)" && sed -i "s|^POSTGRES_PASSWORD=.*$|POSTGRES_PASSWORD=$postgres_password|" .env
 ```
-
-Следующую команду выполни дважды, по одному разу для каждого ключа:
 
 ```sh
-openssl rand -base64 32
+jwt_key="$(openssl rand -base64 32)" && sed -i "s|^JWT_SIGNING_KEY=.*$|JWT_SIGNING_KEY=$jwt_key|" .env
 ```
 
-Храни `.env` вне Git.
+```sh
+encryption_key="$(openssl rand -base64 32)" && sed -i "s|^ENCRYPTION_KEY=.*$|ENCRYPTION_KEY=$encryption_key|" .env
+```
+
+Если указал `WEBHOOK_URL`, сгенерируй секрет вебхука:
+
+```sh
+webhook_secret="$(openssl rand -hex 32)" && sed -i "s|^WEBHOOK_SECRET_HEADER=.*$|WEBHOOK_SECRET_HEADER=$webhook_secret|" .env
+```
+
+Если выбрал `TELEGRAM_MODE=webhook`, сгенерируй секрет вебхука Telegram. `TELEGRAM_BOT_TOKEN` получи у BotFather.
+
+```sh
+telegram_webhook_secret="$(openssl rand -hex 32)" && sed -i "s|^TELEGRAM_WEBHOOK_SECRET=.*$|TELEGRAM_WEBHOOK_SECRET=$telegram_webhook_secret|" .env
+```
+
+Храни `.env` вне Git. На действующей установке сохраняй пароль PostgreSQL и ключ шифрования, если не проводишь их плановую замену.
 
 ### 4. Запусти backend
 
