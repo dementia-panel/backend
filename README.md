@@ -6,17 +6,15 @@
 
 ### 1. Install Docker
 
-If Docker is missing on a Linux test host, install Docker Engine with the Compose plugin:
+On the deployment server, configure the official Docker APT repository for your distribution, then install Docker Engine and the Compose plugin. [Ubuntu](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository) · [Debian](https://docs.docker.com/engine/install/debian/#install-using-the-apt-repository)
 
 ```sh
-curl -fsSL https://get.docker.com | sudo sh
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
-
-For a production server, use Docker's package repository. If your Docker installation requires elevated permissions, run the Compose commands with `sudo`. [Docker Engine installation](https://docs.docker.com/engine/install/)
 
 ### 2. Download the deployment files
 
-Create and enter the deployment directory. The next steps use curl and OpenSSL.
+Create and enter the deployment directory. You will need curl, OpenSSL, and a domain pointing to this server.
 
 ```sh
 mkdir -p dementia
@@ -38,9 +36,9 @@ curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deplo
 
 | Variable | Value |
 | --- | --- |
-| `PUBLIC_URL` | The exact HTTPS address of the panel, with no path or trailing slash. Use `https://localhost:8443` for local use, or an address reachable from your nodes for remote use. |
-| `PANEL_BIND` | Keep `127.0.0.1` for local access or a reverse proxy on the same host. Set the host's listening IP, or `0.0.0.0`, for direct external access. |
-| `PANEL_PORT` | Host port for the panel. The default is `8443`. Match the port in `PUBLIC_URL` when connecting directly. |
+| `PUBLIC_URL` | The public HTTPS address of the panel, for example `https://panel.example.com`. Use a domain reachable from your nodes and omit the trailing slash. |
+| `PANEL_BIND` | Set `0.0.0.0` to publish HTTPS on the server’s IPv4 interfaces. |
+| `PANEL_PORT` | Set `443` for standard HTTPS. |
 | `POSTGRES_USER`, `POSTGRES_DB` | Keep `backend` for both unless you need different names. |
 | `POSTGRES_PASSWORD` | Replace `CHANGE_ME` with a unique password. |
 | `JWT_SIGNING_KEY`, `ENCRYPTION_KEY` | Generate a separate 32-byte Base64 key for each field. Keep the encryption key with your database backups. |
@@ -68,7 +66,7 @@ Keep `.env` outside version control.
 Compose starts PostgreSQL and Valkey as dependencies. The backend applies database migrations on startup.
 
 ```sh
-docker compose up -d --pull always --wait backend
+sudo docker compose up -d --pull always --wait backend
 ```
 
 ### 5. Start the panel
@@ -79,17 +77,15 @@ Continue with the panel setup in the same deployment folder. [Panel installation
 
 ### 1. Установи Docker
 
-Если на тестовой Linux-машине ещё нет Docker, установи Docker Engine с плагином Compose:
+На сервере подключи официальный APT-репозиторий Docker для своего дистрибутива и установи Docker Engine с плагином Compose. [Ubuntu](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository) · [Debian](https://docs.docker.com/engine/install/debian/#install-using-the-apt-repository)
 
 ```sh
-curl -fsSL https://get.docker.com | sudo sh
+sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
-
-Для рабочего сервера используй репозиторий пакетов Docker. Если твоя установка Docker требует повышенных прав, запускай команды Compose через `sudo`. [Установка Docker Engine](https://docs.docker.com/engine/install/)
 
 ### 2. Скачай файлы установки
 
-Создай папку для установки и перейди в неё. Для следующих шагов нужны curl и OpenSSL.
+Создай папку для установки и перейди в неё. Понадобятся curl, OpenSSL и домен, направленный на этот сервер.
 
 ```sh
 mkdir -p dementia
@@ -111,9 +107,9 @@ curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deplo
 
 | Переменная | Значение |
 | --- | --- |
-| `PUBLIC_URL` | Точный HTTPS-адрес панели без пути и завершающего слеша. Для локального запуска используй `https://localhost:8443`, для удалённого — адрес, доступный с нод. |
-| `PANEL_BIND` | Для локального доступа или прокси на том же хосте оставь `127.0.0.1`. Для прямого внешнего доступа укажи IP хоста или `0.0.0.0`. |
-| `PANEL_PORT` | Порт панели на хосте, по умолчанию `8443`. При прямом подключении он должен совпадать с портом в `PUBLIC_URL`. |
+| `PUBLIC_URL` | Публичный HTTPS-адрес панели, например `https://panel.example.com`. Домен должен быть доступен с нод. Завершающий слеш не нужен. |
+| `PANEL_BIND` | Укажи `0.0.0.0`, чтобы опубликовать HTTPS на IPv4-интерфейсах сервера. |
+| `PANEL_PORT` | Укажи `443` для HTTPS. |
 | `POSTGRES_USER`, `POSTGRES_DB` | Оставь `backend` в обоих полях, если другие имена не нужны. |
 | `POSTGRES_PASSWORD` | Замени `CHANGE_ME` на уникальный пароль. |
 | `JWT_SIGNING_KEY`, `ENCRYPTION_KEY` | Сгенерируй для каждого поля отдельный 32-байтовый ключ в Base64. Храни ключ шифрования вместе с резервными копиями базы. |
@@ -141,7 +137,7 @@ openssl rand -base64 32
 Compose автоматически запустит PostgreSQL и Valkey. Backend применит миграции базы при старте.
 
 ```sh
-docker compose up -d --pull always --wait backend
+sudo docker compose up -d --pull always --wait backend
 ```
 
 ### 5. Запусти панель
