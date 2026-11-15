@@ -8,33 +8,53 @@ import (
 )
 
 type User struct {
-	ID              string     `json:"id"`
-	Username        string     `json:"username"`
-	TelegramID      *int64     `json:"telegram_id"`
-	Enabled         bool       `json:"enabled"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	LastConnectedAt *time.Time `json:"last_connected_at"`
-	Online          bool       `json:"online"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	TelegramID         *int64     `json:"telegram_id"`
+	Enabled            bool       `json:"enabled"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	LastConnectedAt    *time.Time `json:"last_connected_at"`
+	SubscriptionPlanID *string    `json:"subscription_plan_id"`
+	Online             bool       `json:"online"`
 }
 
 func scanUser(row pgx.Row) (User, error) {
 	var user User
-	err := row.Scan(&user.ID, &user.Username, &user.TelegramID, &user.Enabled, &user.CreatedAt, &user.UpdatedAt, &user.LastConnectedAt, &user.Online)
+	err := row.Scan(&user.ID, &user.Username, &user.TelegramID, &user.Enabled, &user.CreatedAt, &user.UpdatedAt, &user.LastConnectedAt, &user.Online, &user.SubscriptionPlanID)
 	return user, err
 }
 
 func (s Store) CreateUser(ctx context.Context, username string, telegramID *int64) (User, error) {
 	return scanUser(s.DB.QueryRow(ctx, `INSERT INTO users(username,telegram_id) VALUES($1,$2)
-		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false`, username, telegramID))
+		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text`, username, telegramID))
+}
+
+func (s Store) CreateUserWithSubscription(ctx context.Context, username string, telegramID *int64, planID string, token string) (User, string, error) {
+	var user User
+	var accessID string
+	err := pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
+		var err error
+		user, err = scanUser(tx.QueryRow(ctx, `INSERT INTO users(username,telegram_id) VALUES($1,$2)
+			RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text`, username, telegramID))
+		if err != nil {
+			return err
+		}
+		if accessID, _, err = s.assignSubscriptionPlan(ctx, tx, user.ID, &planID, token); err != nil {
+			return err
+		}
+		user.SubscriptionPlanID = &planID
+		return nil
+	})
+	return user, accessID, err
 }
 
 const selectUsers = `SELECT u.id::text,u.username,u.telegram_id,u.enabled,u.created_at,u.updated_at,
-	activity.last_connected_at,coalesce(activity.online,false)
+	activity.last_connected_at,coalesce(activity.online,false),u.subscription_plan_id::text
 	FROM users u
 	CROSS JOIN LATERAL (
 		SELECT greatest(max(p.last_handshake_at),max(s.removed_peer_last_handshake_at)) AS last_connected_at,
-		    bool_or(u.enabled AND s.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) AND n.enabled AND n.status='ready'
+		    bool_or(u.enabled AND s.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) AND n.enabled AND n.status='ready'
 		        AND n.applied_revision=n.revision
 		        AND n.handshakes_reported_at>now()-interval '1 minute'
 		        AND p.current_handshake_at>now()-interval '3 minutes') AS online

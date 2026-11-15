@@ -100,6 +100,11 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 		}()
 		ctx, cancel := context.WithTimeout(h.context, 15*time.Minute)
 		defer cancel()
+		input.Progress = func(stage string) {
+			progressCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			_ = h.store.InstallStage(progressCtx, n.ID, token, stage)
+		}
 		var installErr error
 		public, header, installErr = provision.Install(ctx, input)
 		input.Password = ""
@@ -219,12 +224,64 @@ func (h *Handler) retireNode(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		return
 	}
-	node, err := h.store.RetireNode(r.Context(), id)
+	var req struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	if !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") {
+		httpx.Failure(w, http.StatusBadRequest, "invalid SSH credentials")
+		return
+	}
+	select {
+	case h.installSlots <- struct{}{}:
+	default:
+		httpx.Failure(w, http.StatusTooManyRequests, "all installation workers are busy")
+		return
+	}
+	node, err := h.store.BeginNodeRemoval(r.Context(), id)
 	if err != nil {
+		<-h.installSlots
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Failure(w, http.StatusConflict, "node is unavailable or busy")
+			return
+		}
 		httpx.HandleError(w, err)
 		return
 	}
-	httpx.Respond(w, http.StatusAccepted, node)
+	input := provision.Request{ID: id, IP: node.IP, SSHPort: node.SSHPort, Login: req.Login, Password: req.Password}
+	input.VerifyHostKey = func(ctx context.Context, key string) error { return h.store.VerifyRemovalHostKey(ctx, id, key) }
+	finish := func(reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if err := h.store.FinishNodeRemoval(ctx, id, reason); err != nil {
+			slog.Error("failed to save node removal result", "node_id", id, "type", httpx.ErrorType(err))
+			if reason == "" {
+				_ = h.store.FinishNodeRemoval(ctx, id, "VPS cleaned but panel removal failed; retry removal")
+			}
+		}
+	}
+	if !h.workers.Start("node removal", func() {
+		defer func() { <-h.installSlots }()
+		reason := "remote cleanup interrupted; retry removal"
+		defer func() { finish(reason) }()
+		ctx, cancel := context.WithTimeout(h.context, 3*time.Minute)
+		defer cancel()
+		if err := provision.Remove(ctx, input); err != nil {
+			reason = err.Error()
+		} else {
+			reason = ""
+		}
+		input.Password = ""
+	}) {
+		<-h.installSlots
+		finish("backend is shutting down")
+		httpx.Failure(w, http.StatusServiceUnavailable, "backend is shutting down")
+		return
+	}
+	httpx.Respond(w, 202, node)
 }
 
 func (h *Handler) restartAllNodes(w http.ResponseWriter, r *http.Request) {

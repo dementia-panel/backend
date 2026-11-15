@@ -23,7 +23,7 @@ type download struct {
 
 type page struct {
 	Name      string     `json:"name"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
 	Locations []download `json:"locations"`
 }
 
@@ -55,7 +55,7 @@ var subscriptionTemplate = template.Must(template.New("subscription").Parse(`<!d
 <script src="/s/assets/copy-key.js" defer></script>
 <main>
 <h1>{{.Name}}</h1>
-<p>Действует до {{.ExpiresAt.UTC.Format "02.01.2006 15:04"}} UTC.</p>
+{{if .ExpiresAt}}<p>Действует до {{.ExpiresAt.UTC.Format "02.01.2006 15:04"}} UTC.</p>{{end}}
 <p>Выберите сервер. В приложении AmneziaVPN можно импортировать файл .vpn или вставить ключ vpn://.</p>
 <ul>{{range .Locations}}<li>
 <strong>{{.Name}}</strong>

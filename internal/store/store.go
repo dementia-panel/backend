@@ -41,14 +41,15 @@ type Node struct {
 	Online              bool       `json:"online"`
 	RestartRevision     int64      `json:"restart_revision"`
 	RestartedRevision   int64      `json:"restarted_revision"`
+	OperationStage      string     `json:"operation_stage"`
 	Error               *string    `json:"error"`
 }
 
-const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port"
+const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage"
 
 func scanNode(row pgx.Row) (Node, error) {
 	var n Node
-	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort)
+	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort, &n.OperationStage)
 	return n, err
 }
 
@@ -64,12 +65,17 @@ func HashToken(token string) []byte {
 }
 
 func (s Store) ReserveNode(ctx context.Context, name, ip, token string, sshPort, vpnPort int) (Node, error) {
-	return scanNode(s.DB.QueryRow(ctx, `INSERT INTO nodes(name,ip,host_key,agent_token_hash,ssh_port,vpn_port)
-		VALUES($1,$2,'',$3,$4,$5) ON CONFLICT(ip) DO UPDATE
-		SET name=EXCLUDED.name, agent_token_hash=EXCLUDED.agent_token_hash, status='installing',error=NULL,
+	return scanNode(s.DB.QueryRow(ctx, `INSERT INTO nodes(name,ip,host_key,agent_token_hash,ssh_port,vpn_port,operation_stage)
+		VALUES($1,$2,'',$3,$4,$5,'queued') ON CONFLICT(ip) DO UPDATE
+		SET name=EXCLUDED.name, agent_token_hash=EXCLUDED.agent_token_hash, status='installing',error=NULL,operation_stage='queued',
+		    retired_at=NULL,enabled=true,ssh_port=EXCLUDED.ssh_port,vpn_port=EXCLUDED.vpn_port,
+		    host_key=CASE WHEN nodes.operation_stage='removed' THEN '' ELSE nodes.host_key END,
+		    endpoint_host=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_host END,
+		    endpoint_port=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_port END,
 		    last_seen_at=NULL,handshakes_reported_at=NULL,connection_ok=NULL,connection_checked_at=NULL,applied_revision=0,revision=nodes.revision+1
-		WHERE nodes.status='failed' AND nodes.retired_at IS NULL AND nodes.vpn_port=EXCLUDED.vpn_port
-		    AND nodes.ssh_port=EXCLUDED.ssh_port
+		WHERE nodes.operation_stage<>'removing' AND
+		    (nodes.retired_at IS NOT NULL OR (nodes.status='failed'
+		     AND nodes.vpn_port=EXCLUDED.vpn_port AND nodes.ssh_port=EXCLUDED.ssh_port))
 		RETURNING `+nodeColumns, name, ip, HashToken(token), sshPort, vpnPort))
 }
 
@@ -92,7 +98,7 @@ func (s Store) Node(ctx context.Context, id string) (Node, error) {
 }
 
 func (s Store) Nodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.DB.Query(ctx, "SELECT "+nodeColumns+" FROM nodes ORDER BY created_at,id")
+	rows, err := s.DB.Query(ctx, "SELECT "+nodeColumns+" FROM nodes WHERE retired_at IS NULL ORDER BY created_at,id")
 	if err != nil {
 		return nil, err
 	}
@@ -113,13 +119,16 @@ func (s Store) FinishInstall(ctx context.Context, id, token, publicKey, headerKe
 		_, err := s.DB.Exec(ctx, `UPDATE nodes SET status='failed',error=$3 WHERE id=$1 AND agent_token_hash=$2 AND status='installing'`, id, HashToken(token), failure)
 		return err
 	}
-	_, err := s.DB.Exec(ctx, `UPDATE nodes SET status='ready',public_key=$3,header_key=$4,error=NULL
+	_, err := s.DB.Exec(ctx, `UPDATE nodes SET status='ready',operation_stage='complete',public_key=$3,header_key=$4,error=NULL
 		WHERE id=$1 AND agent_token_hash=$2 AND status='installing'`, id, HashToken(token), publicKey, s.Vault.Seal(headerKey))
 	return err
 }
 
 func (s Store) RecoverInstallations(ctx context.Context) error {
-	_, err := s.DB.Exec(ctx, `UPDATE nodes SET status='failed',error='installation interrupted; submit credentials again' WHERE status='installing'`)
+	_, err := s.DB.Exec(ctx, `UPDATE nodes SET status=CASE WHEN status='installing' THEN 'failed' ELSE status END,
+ error=CASE WHEN operation_stage='removing' THEN 'remote cleanup interrupted; retry removal' ELSE 'installation interrupted; submit credentials again' END,
+ operation_stage=CASE WHEN operation_stage='removing' THEN 'remove_failed' ELSE operation_stage END
+ WHERE status='installing' OR operation_stage='removing'`)
 	return err
 }
 
@@ -141,9 +150,10 @@ type Subscription struct {
 	UserID           string     `json:"user_id"`
 	Name             string     `json:"name"`
 	Enabled          bool       `json:"enabled"`
-	ExpiresAt        time.Time  `json:"expires_at"`
+	ExpiresAt        *time.Time `json:"expires_at"`
 	TrafficLimit     *int64     `json:"traffic_limit_bytes"`
 	TrafficUsed      int64      `json:"traffic_used_bytes"`
+	PlanID           *string    `json:"plan_id,omitempty"`
 	NodeIDs          []string   `json:"node_ids,omitempty"`
 }
 
@@ -204,72 +214,76 @@ func (s Store) insertPeer(ctx context.Context, tx pgx.Tx, subscriptionID, nodeID
 
 func (s Store) ReplaceSubscriptionNodes(ctx context.Context, subscriptionID string, nodeIDs []string) error {
 	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
-		var id string
-		if err := tx.QueryRow(ctx, "SELECT id::text FROM subscriptions WHERE id=$1 FOR UPDATE", subscriptionID).Scan(&id); err != nil {
-			return err
-		}
-		rows, err := tx.Query(ctx, `SELECT n.id::text,n.enabled AND n.status='ready',p.node_id IS NOT NULL
-			FROM nodes n LEFT JOIN peers p ON p.node_id=n.id AND p.subscription_id=$1
-			WHERE n.id=ANY($2::text[]::uuid[]) OR p.node_id IS NOT NULL ORDER BY n.id FOR UPDATE OF n`, id, nodeIDs)
-		if err != nil {
-			return err
-		}
-		type assignment struct {
-			id              string
-			ready, assigned bool
-		}
-		assignments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (assignment, error) {
-			var item assignment
-			err := row.Scan(&item.id, &item.ready, &item.assigned)
-			return item, err
-		})
-		if err != nil {
-			return err
-		}
-		changed := false
-		wanted := make(map[string]bool, len(nodeIDs))
-		for _, nodeID := range nodeIDs {
-			wanted[nodeID] = true
-		}
-		for _, item := range assignments {
-			keep := wanted[item.id]
-			delete(wanted, item.id)
-			if keep == item.assigned {
-				continue
-			}
-			changed = true
-			if keep && !item.ready {
-				return fmt.Errorf("%w: %s", ErrNodeUnavailable, item.id)
-			}
-			if _, err := tx.Exec(ctx, "UPDATE nodes SET revision=revision+1 WHERE id=$1", item.id); err != nil {
-				return err
-			}
-			if keep {
-				if err := s.insertPeer(ctx, tx, id, item.id); err != nil {
-					return err
-				}
-			} else if _, err := tx.Exec(ctx, `WITH removed AS (
-				DELETE FROM peers WHERE subscription_id=$1 AND node_id=$2 RETURNING last_handshake_at
-			) UPDATE subscriptions SET removed_peer_last_handshake_at=greatest(
-				removed_peer_last_handshake_at,(SELECT last_handshake_at FROM removed)) WHERE id=$1`, id, item.id); err != nil {
-				return err
-			}
-		}
-		if len(wanted) != 0 {
-			return ErrNodeUnavailable
-		}
-		if changed {
-			_, err := tx.Exec(ctx, `INSERT INTO events(scope,event,data)
-				SELECT 'subscription','subscription.nodes_changed',jsonb_build_object('id',id,'user_id',user_id,'node_ids',$2::text[])
-				FROM subscriptions WHERE id=$1 AND current_setting('dementia.webhook_enabled', true)='on'`, id, nodeIDs)
-			return err
-		}
-		return nil
+		return s.replaceSubscriptionNodes(ctx, tx, subscriptionID, nodeIDs)
 	})
 }
 
+func (s Store) replaceSubscriptionNodes(ctx context.Context, tx pgx.Tx, subscriptionID string, nodeIDs []string) error {
+	var id string
+	if err := tx.QueryRow(ctx, "SELECT id::text FROM subscriptions WHERE id=$1 FOR UPDATE", subscriptionID).Scan(&id); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT n.id::text,n.enabled AND n.status='ready',p.node_id IS NOT NULL
+		FROM nodes n LEFT JOIN peers p ON p.node_id=n.id AND p.subscription_id=$1
+		WHERE n.id=ANY($2::text[]::uuid[]) OR p.node_id IS NOT NULL ORDER BY n.id FOR UPDATE OF n`, id, nodeIDs)
+	if err != nil {
+		return err
+	}
+	type assignment struct {
+		id              string
+		ready, assigned bool
+	}
+	assignments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (assignment, error) {
+		var item assignment
+		err := row.Scan(&item.id, &item.ready, &item.assigned)
+		return item, err
+	})
+	if err != nil {
+		return err
+	}
+	changed := false
+	wanted := make(map[string]bool, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		wanted[nodeID] = true
+	}
+	for _, item := range assignments {
+		keep := wanted[item.id]
+		delete(wanted, item.id)
+		if keep == item.assigned {
+			continue
+		}
+		changed = true
+		if keep && !item.ready {
+			return fmt.Errorf("%w: %s", ErrNodeUnavailable, item.id)
+		}
+		if _, err := tx.Exec(ctx, "UPDATE nodes SET revision=revision+1 WHERE id=$1", item.id); err != nil {
+			return err
+		}
+		if keep {
+			if err := s.insertPeer(ctx, tx, id, item.id); err != nil {
+				return err
+			}
+		} else if _, err := tx.Exec(ctx, `WITH removed AS (
+			DELETE FROM peers WHERE subscription_id=$1 AND node_id=$2 RETURNING last_handshake_at
+		) UPDATE subscriptions SET removed_peer_last_handshake_at=greatest(
+			removed_peer_last_handshake_at,(SELECT last_handshake_at FROM removed)) WHERE id=$1`, id, item.id); err != nil {
+			return err
+		}
+	}
+	if len(wanted) != 0 {
+		return ErrNodeUnavailable
+	}
+	if changed {
+		_, err := tx.Exec(ctx, `INSERT INTO events(scope,event,data)
+			SELECT 'subscription','subscription.nodes_changed',jsonb_build_object('id',id,'user_id',user_id,'node_ids',$2::text[])
+			FROM subscriptions WHERE id=$1 AND current_setting('dementia.webhook_enabled', true)='on'`, id, nodeIDs)
+		return err
+	}
+	return nil
+}
+
 func (s Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
-	rows, err := s.DB.Query(ctx, `SELECT s.id::text,s.user_id::text,s.name,s.enabled,s.expires_at,s.traffic_limit_bytes,s.traffic_used_bytes,s.traffic_reset_days,s.traffic_reset_at,
+	rows, err := s.DB.Query(ctx, `SELECT s.id::text,s.user_id::text,s.name,s.enabled,s.expires_at,s.traffic_limit_bytes,s.traffic_used_bytes,s.traffic_reset_days,s.traffic_reset_at,s.plan_id::text,
 		ARRAY(SELECT p.node_id::text FROM peers p WHERE p.subscription_id=s.id ORDER BY p.node_id)
 		FROM subscriptions s ORDER BY s.created_at,s.id`)
 	if err != nil {
@@ -279,7 +293,7 @@ func (s Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
 	result := []Subscription{}
 	for rows.Next() {
 		var sub Subscription
-		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt, &sub.TrafficLimit, &sub.TrafficUsed, &sub.TrafficResetDays, &sub.TrafficResetAt, &sub.NodeIDs); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt, &sub.TrafficLimit, &sub.TrafficUsed, &sub.TrafficResetDays, &sub.TrafficResetAt, &sub.PlanID, &sub.NodeIDs); err != nil {
 			return nil, err
 		}
 		result = append(result, sub)
@@ -329,7 +343,7 @@ func (s Store) PublicSubscription(ctx context.Context, token string) (Subscripti
 	err := pgx.BeginTxFunc(ctx, s.DB, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `SELECT s.id::text,s.name,s.enabled,s.expires_at
 			FROM subscriptions s JOIN users u ON u.id=s.user_id
-			WHERE s.token_hash=$1 AND s.enabled AND u.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)`, HashToken(token)).
+			WHERE s.token_hash=$1 AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)`, HashToken(token)).
 			Scan(&sub.ID, &sub.Name, &sub.Enabled, &sub.ExpiresAt)
 		if err != nil {
 			return err
@@ -367,7 +381,7 @@ func (s Store) clientProfile(ctx context.Context, nodeID, condition string, valu
 	var address, port int
 	err := s.DB.QueryRow(ctx, `SELECT n.name,coalesce(n.endpoint_host,host(n.ip)),coalesce(n.endpoint_port,n.vpn_port),n.public_key,n.header_key,p.private_key,p.address
 		FROM subscriptions s JOIN users u ON u.id=s.user_id JOIN peers p ON p.subscription_id=s.id JOIN nodes n ON n.id=p.node_id
-		WHERE n.id=$1 AND s.enabled AND u.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)
+		WHERE n.id=$1 AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)
 		    AND n.enabled AND n.status='ready' AND n.retired_at IS NULL AND `+condition, nodeID, value).
 		Scan(&name, &ip, &port, &public, &header, &private, &address)
 	if err != nil {
@@ -404,13 +418,13 @@ func (s Store) State(ctx context.Context, id, token string) (State, error) {
 	state := State{Peers: []Peer{}}
 	err := pgx.BeginTxFunc(ctx, s.DB, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var enabled bool
-		err := tx.QueryRow(ctx, `SELECT revision,enabled,name,restart_revision FROM nodes WHERE id=$1 AND agent_token_hash=$2 AND status='ready'`, id, HashToken(token)).Scan(&state.Revision, &enabled, &state.Name, &state.RestartRevision)
+		err := tx.QueryRow(ctx, `SELECT revision,enabled,name,restart_revision FROM nodes WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND retired_at IS NULL`, id, HashToken(token)).Scan(&state.Revision, &enabled, &state.Name, &state.RestartRevision)
 		if err != nil || !enabled {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT p.public_key,p.address,s.expires_at
+		rows, err := tx.Query(ctx, `SELECT p.public_key,p.address,coalesce(s.expires_at,'9999-12-31 23:59:59+00'::timestamptz)
 			FROM peers p JOIN subscriptions s ON s.id=p.subscription_id JOIN users u ON u.id=s.user_id
-			WHERE p.node_id=$1 AND s.enabled AND u.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) ORDER BY p.address`, id)
+			WHERE p.node_id=$1 AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) ORDER BY p.address`, id)
 		if err != nil {
 			return err
 		}
@@ -432,7 +446,7 @@ func (s Store) State(ctx context.Context, id, token string) (State, error) {
 func (s Store) AgentExists(ctx context.Context, id, token string) (bool, error) {
 	var exists bool
 	err := s.DB.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM nodes WHERE id=$1 AND agent_token_hash=$2 AND status='ready'
+		SELECT 1 FROM nodes WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND retired_at IS NULL
 	)`, id, HashToken(token)).Scan(&exists)
 	return exists, err
 }
@@ -444,7 +458,7 @@ func (s Store) Ack(ctx context.Context, id, token string, revision, restarted in
 			if _, err := tx.Exec(ctx, `SELECT s.id FROM subscriptions s WHERE s.id IN (
 				SELECT p.subscription_id FROM peers p JOIN jsonb_object_keys($2::jsonb) k ON k=p.public_key
 				WHERE p.node_id=$1 AND EXISTS (
-					SELECT 1 FROM nodes WHERE id=$1 AND agent_token_hash=$3 AND status='ready'
+					SELECT 1 FROM nodes WHERE id=$1 AND agent_token_hash=$3 AND status='ready' AND retired_at IS NULL
 				)
 			) ORDER BY s.id FOR UPDATE`, id, traffic, HashToken(token)); err != nil {
 				return err
@@ -453,7 +467,7 @@ func (s Store) Ack(ctx context.Context, id, token string, revision, restarted in
 		tag, err := tx.Exec(ctx, `UPDATE nodes SET applied_revision=$3,last_seen_at=clock_timestamp(),
 		restarted_revision=greatest(restarted_revision,$4),
 		handshakes_reported_at=CASE WHEN $5 THEN clock_timestamp() ELSE handshakes_reported_at END
-		WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND $3 BETWEEN applied_revision AND revision AND $4<=restart_revision`, id, HashToken(token), revision, restarted, handshakes != nil)
+		WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND retired_at IS NULL AND $3 BETWEEN applied_revision AND revision AND $4<=restart_revision`, id, HashToken(token), revision, restarted, handshakes != nil)
 		if err != nil {
 			return err
 		}

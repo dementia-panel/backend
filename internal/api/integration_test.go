@@ -555,11 +555,23 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	checkConnection(true, 0)
 
 	call(http.MethodPost, "/api/admin/nodes/actions/restart-all", admin, nil, 202, nil)
-	call(http.MethodDelete, nodePath, admin, nil, 202, nil)
-	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 200, &nodeState)
-	if len(nodeState.Peers) != 0 {
-		t.Fatal("retired node still has peers")
+	call(http.MethodDelete, nodePath, admin, nil, 400, nil)
+	removal, err := repo.BeginNodeRemoval(ctx, nodes[0].id)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := repo.VerifyRemovalHostKey(ctx, removal.ID, "wrong-host-key"); err == nil {
+		t.Fatal("cleanup accepted a different SSH key")
+	}
+	if err := repo.FinishNodeRemoval(ctx, nodes[0].id, ""); err != nil {
+		t.Fatal(err)
+	}
+	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 403, nil)
+	readded, err := repo.ReserveNode(ctx, "Readded", removal.IP, store.NewToken(), 2222, 51821)
+	if err != nil || readded.RetiredAt != nil || readded.Status != "installing" {
+		t.Fatalf("could not re-add removed node: %v", err)
+	}
+
 	call(http.MethodDelete, adminPath, admin, nil, 204, nil)
 	call(http.MethodDelete, userPath, admin, nil, 204, nil)
 	call(http.MethodGet, userPath, admin, nil, 404, nil)
@@ -569,6 +581,39 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		WHERE event IN ('node.created','node.connection_lost','node.connection_restored','node.deleted')`).Scan(&telegramEvents); err != nil || telegramEvents != 7 {
 		t.Fatalf("expected seven node notifications independently of webhook, got %d: %v", telegramEvents, err)
 	}
+
+	var plan store.SubscriptionPlan
+	call(http.MethodPost, "/api/admin/subscription-plans", admin, map[string]any{
+		"name": "Shared", "node_ids": []string{nodes[1].id},
+	}, 201, &plan)
+	var assignedUser struct {
+		store.User
+		AccessID string `json:"access_id"`
+		URL      string `json:"subscription_url"`
+	}
+	call(http.MethodPost, "/api/admin/users", admin, map[string]any{
+		"username": "plan-user", "plan_id": plan.ID,
+	}, 201, &assignedUser)
+	if assignedUser.SubscriptionPlanID == nil || *assignedUser.SubscriptionPlanID != plan.ID || assignedUser.AccessID == "" || assignedUser.URL == "" {
+		t.Fatal("missing issued access for first assignment")
+	}
+	assignedPath := "/api/admin/users/" + assignedUser.ID + "/subscription"
+	profilePath := "/api/admin/subscriptions/" + assignedUser.AccessID + "/nodes/" + nodes[1].id + "/profile"
+	before := call(http.MethodGet, profilePath, admin, nil, 200, nil)
+	var same struct{ ID, URL string }
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID}, 200, &same)
+	after := call(http.MethodGet, profilePath, admin, nil, 200, nil)
+	if same.ID != assignedUser.AccessID || same.URL != "" || before != after {
+		t.Fatal("same assignment rotated the VPN credentials")
+	}
+	call(http.MethodPut, "/api/admin/subscription-plans/"+plan.ID, admin, map[string]any{"name": "Renamed", "node_ids": []string{nodes[1].id}}, 200, nil)
+	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
+		t.Fatal("renaming a plan changed an existing VPN key")
+	}
+	call(http.MethodDelete, "/api/admin/subscription-plans/"+plan.ID, admin, nil, 409, nil)
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": nil}, 200, nil)
+	call(http.MethodGet, profilePath, admin, nil, 404, nil)
+	call(http.MethodDelete, "/api/admin/subscription-plans/"+plan.ID, admin, nil, 204, nil)
 
 	// First-login onboarding must be authenticated, mandatory, and atomic.
 	call(http.MethodPost, "/api/auth/complete-setup", "", creds, 401, nil)
@@ -633,7 +678,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		counts[event.Name]++
 	}
 	for name, expected := range map[string]int{
-		"user.created": 1, "node.created": 2, "node.modified": 1, "node.connection_lost": 2,
+		"user.created": 1, "node.created": 2, "node.modified": 2, "node.connection_lost": 2,
 		"node.connection_restored": 2, "subscription.created": 1, "subscription.nodes_changed": 1,
 	} {
 		if counts[name] != expected {

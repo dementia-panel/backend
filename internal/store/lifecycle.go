@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"time"
 
 	"dementia/backend/internal/vpn"
 	"github.com/jackc/pgx/v5"
@@ -89,23 +88,53 @@ func (s Store) RevokeSubscription(ctx context.Context, id, token string) error {
 	})
 }
 
-func (s Store) RetireNode(ctx context.Context, id string) (Node, error) {
-	var node Node
-	err := pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
-		var previous *time.Time
-		if err := tx.QueryRow(ctx, "SELECT retired_at FROM nodes WHERE id=$1 FOR UPDATE", id).Scan(&previous); err != nil {
+func (s Store) InstallStage(ctx context.Context, id, token, stage string) error {
+	_, err := s.DB.Exec(ctx, `UPDATE nodes SET operation_stage=$3 WHERE id=$1 AND agent_token_hash=$2 AND status='installing'`, id, HashToken(token), stage)
+	return err
+}
+
+func (s Store) BeginNodeRemoval(ctx context.Context, id string) (Node, error) {
+	return scanNode(s.DB.QueryRow(ctx, `UPDATE nodes SET operation_stage='removing',error=NULL
+		WHERE id=$1 AND retired_at IS NULL AND status<>'installing' AND operation_stage<>'removing' RETURNING `+nodeColumns, id))
+}
+
+func (s Store) VerifyRemovalHostKey(ctx context.Context, id, key string) error {
+	var ok bool
+	err := s.DB.QueryRow(ctx, `SELECT host_key='' OR host_key=$2 FROM nodes WHERE id=$1 AND operation_stage='removing'`, id, key).Scan(&ok)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNodeUnavailable
+	}
+	return nil
+}
+
+func (s Store) FinishNodeRemoval(ctx context.Context, id, failure string) error {
+	if failure != "" {
+		_, err := s.DB.Exec(ctx, `UPDATE nodes SET operation_stage='remove_failed',error=$2 WHERE id=$1 AND operation_stage='removing'`, id, failure)
+		return err
+	}
+	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT s.id FROM subscriptions s JOIN peers p ON p.subscription_id=s.id
+			WHERE p.node_id=$1 ORDER BY s.id FOR UPDATE OF s`, id); err != nil {
 			return err
 		}
-		var err error
-		node, err = scanNode(tx.QueryRow(ctx, `UPDATE nodes SET retired_at=coalesce(retired_at,now()),enabled=false,
-			revision=revision+CASE WHEN retired_at IS NULL THEN 1 ELSE 0 END
-			WHERE id=$1 RETURNING `+nodeColumns, id))
-		if err != nil || previous != nil {
+		var name string
+		if err := tx.QueryRow(ctx, `UPDATE nodes SET retired_at=now(),enabled=false,operation_stage='removed',revision=revision+1
+			WHERE id=$1 AND operation_stage='removing' RETURNING name`, id).Scan(&name); err != nil {
 			return err
 		}
-		return recordDeletion(ctx, tx, "node", id, node.Name)
+		if _, err := tx.Exec(ctx, `WITH removed AS (DELETE FROM peers WHERE node_id=$1 RETURNING subscription_id,last_handshake_at)
+				UPDATE subscriptions s SET removed_peer_last_handshake_at=greatest(s.removed_peer_last_handshake_at,r.last_handshake_at)
+				FROM removed r WHERE s.id=r.subscription_id`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM subscription_plan_nodes WHERE node_id=$1`, id); err != nil {
+			return err
+		}
+		return recordDeletion(ctx, tx, "node", id, name)
 	})
-	return node, err
 }
 
 func (s Store) RestartAllNodes(ctx context.Context) (int64, error) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/store"
 )
 
 func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
@@ -32,8 +33,9 @@ func (h *Handler) user(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username   string `json:"username"`
-		TelegramID *int64 `json:"telegram_id"`
+		Username   string  `json:"username"`
+		TelegramID *int64  `json:"telegram_id"`
+		PlanID     *string `json:"plan_id"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
@@ -45,6 +47,24 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TelegramID != nil && *req.TelegramID <= 0 {
 		httpx.Failure(w, http.StatusBadRequest, "telegram_id must be positive")
+		return
+	}
+	if req.PlanID != nil {
+		if !httpx.ValidID(*req.PlanID) {
+			httpx.Failure(w, http.StatusBadRequest, "invalid plan ID")
+			return
+		}
+		token := store.NewToken()
+		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), req.Username, req.TelegramID, *req.PlanID, token)
+		if err != nil {
+			httpx.HandleError(w, err)
+			return
+		}
+		httpx.Respond(w, http.StatusCreated, struct {
+			store.User
+			SubscriptionURL string `json:"subscription_url"`
+			AccessID        string `json:"access_id"`
+		}{user, h.publicURL + "/s/" + token, accessID})
 		return
 	}
 	u, err := h.store.CreateUser(r.Context(), req.Username, req.TelegramID)

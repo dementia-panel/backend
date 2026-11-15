@@ -58,7 +58,7 @@ func (a *API) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(apitokens.AllowBearer(a.Store, admin.RequireSession))
 			nodes.Register(r, a.Store, a.PublicURL, a.Context, &a.Workers)
-			users.Register(r, a.Store)
+			users.Register(r, a.Store, a.PublicURL)
 			subscriptions.Register(r, a.Store, a.PublicURL)
 			traffic.Register(r, a.Store)
 		})

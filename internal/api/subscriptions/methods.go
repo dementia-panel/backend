@@ -2,6 +2,7 @@ package subscriptions
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -234,4 +235,97 @@ func (h *Handler) setTrafficResetSchedule(w http.ResponseWriter, r *http.Request
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
+}
+
+func (h *Handler) plans(w http.ResponseWriter, r *http.Request) {
+	result, err := h.store.SubscriptionPlans(r.Context())
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, http.StatusOK, result)
+}
+
+func (h *Handler) savePlan(w http.ResponseWriter, r *http.Request) {
+	var id string
+	if r.Method == http.MethodPut {
+		id = httpx.IDParam(w, r)
+		if id == "" {
+			return
+		}
+	}
+	var req struct {
+		Name    string   `json:"name"`
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" || len(req.Name) > 128 {
+		httpx.Failure(w, http.StatusBadRequest, "invalid subscription name")
+		return
+	}
+	if !validateNodes(w, req.NodeIDs) {
+		return
+	}
+	plan, err := h.store.SaveSubscriptionPlan(r.Context(), id, req.Name, req.NodeIDs)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if id == "" {
+		status = http.StatusCreated
+	}
+	httpx.Respond(w, status, plan)
+}
+
+func (h *Handler) deletePlan(w http.ResponseWriter, r *http.Request) {
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	err := h.store.DeleteSubscriptionPlan(r.Context(), id)
+	if errors.Is(err, store.ErrPlanInUse) {
+		httpx.Failure(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, http.StatusNoContent, nil)
+}
+
+func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	var req struct {
+		PlanID json.RawMessage `json:"plan_id"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	var planID *string
+	if len(req.PlanID) == 0 || json.Unmarshal(req.PlanID, &planID) != nil || (planID != nil && !httpx.ValidID(*planID)) {
+		httpx.Failure(w, http.StatusBadRequest, "plan_id must be a UUID or null")
+		return
+	}
+	token := store.NewToken()
+	subID, issued, err := h.store.AssignSubscriptionPlan(r.Context(), id, planID, token)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	result := struct {
+		ID  string `json:"id,omitempty"`
+		URL string `json:"url,omitempty"`
+	}{ID: subID}
+	if issued {
+		result.URL = h.publicURL + "/s/" + token
+	}
+	httpx.Respond(w, http.StatusOK, result)
 }

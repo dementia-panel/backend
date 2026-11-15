@@ -17,6 +17,11 @@ func RegisterProfileExport(r chi.Router, repo store.Store) {
 
 func Register(r chi.Router, repo store.Store, publicURL string) {
 	h := &Handler{store: repo, publicURL: publicURL}
+	r.Get("/subscription-plans", h.plans)
+	r.Post("/subscription-plans", h.savePlan)
+	r.Put("/subscription-plans/{id}", h.savePlan)
+	r.Delete("/subscription-plans/{id}", h.deletePlan)
+	r.Put("/users/{id}/subscription", h.assignPlan)
 	r.Get("/subscriptions", h.subscriptions)
 	r.Post("/subscriptions", h.createSubscription)
 	r.Patch("/subscriptions/{id}", h.updateSubscription)
