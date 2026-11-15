@@ -293,6 +293,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	for _, node := range nodes {
 		profile := path + "/nodes/" + node.id + ".conf"
 		call(http.MethodGet, profile, "", nil, 404, nil)
+		call(http.MethodGet, strings.TrimSuffix(profile, ".conf")+".key", "", nil, 404, nil)
 		agent := "/api/agent/nodes/" + node.id
 		var state store.State
 		call(http.MethodGet, agent+"/state", node.token, nil, 200, &state)
@@ -308,6 +309,35 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	}
 	if privateKeys[0] == privateKeys[1] {
 		t.Fatal("node profiles share a private key")
+	}
+	html := call(http.MethodGet, path, "", nil, 200, nil)
+	var manifest struct {
+		Locations []struct {
+			ID     string `json:"id"`
+			KeyURL string `json:"key_url"`
+		} `json:"locations"`
+	}
+	call(http.MethodGet, path+"/manifest", "", nil, 200, &manifest)
+	if len(manifest.Locations) != len(nodes) {
+		t.Fatal("manifest does not include all nodes")
+	}
+	keys := make(map[string]string, len(nodes))
+	for _, location := range manifest.Locations {
+		profileURL := path + "/nodes/" + location.ID
+		if location.KeyURL != origin+profileURL+".key" || !strings.Contains(html, location.KeyURL) {
+			t.Fatal("missing text key link for node")
+		}
+		key := call(http.MethodGet, profileURL+".key", "", nil, 200, nil)
+		if !strings.HasPrefix(key, "vpn://") || strings.Contains(html, key) {
+			t.Fatal("text key is invalid or was embedded in the page")
+		}
+		if file := call(http.MethodGet, profileURL+".vpn", "", nil, 200, nil); key != file {
+			t.Fatal("text and file formats produced different keys")
+		}
+		keys[location.ID] = key
+	}
+	if keys[nodes[0].id] == keys[nodes[1].id] {
+		t.Fatal("different nodes have the same text key")
 	}
 	nodePath := "/api/admin/nodes/" + nodes[0].id
 	agentPath := "/api/agent/nodes/" + nodes[0].id
@@ -359,6 +389,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 
 	call(http.MethodPatch, nodePath, admin, map[string]any{"enabled": false}, 200, nil)
 	call(http.MethodGet, profile+".vpn", "", nil, 404, nil)
+	call(http.MethodGet, profile+".key", "", nil, 404, nil)
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 200, &nodeState)
 	if len(nodeState.Peers) != 0 {
 		t.Fatal("paused node still receives peers")
