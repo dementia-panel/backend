@@ -292,6 +292,10 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	var privateKeys []string
 	for _, node := range nodes {
 		profile := path + "/nodes/" + node.id + ".conf"
+		adminProfile := "/api/admin/subscriptions/" + sub.ID + "/nodes/" + node.id + "/profile"
+		call(http.MethodGet, adminProfile, "", nil, 401, nil)
+		var issued struct{ Conf, Key string }
+		call(http.MethodGet, adminProfile, admin, nil, 200, &issued)
 		call(http.MethodGet, profile, "", nil, 404, nil)
 		call(http.MethodGet, strings.TrimSuffix(profile, ".conf")+".key", "", nil, 404, nil)
 		agent := "/api/agent/nodes/" + node.id
@@ -302,6 +306,9 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		}
 		call(http.MethodPost, agent+"/ack", node.token, map[string]int64{"revision": state.Revision}, 200, nil)
 		conf := call(http.MethodGet, profile, "", nil, 200, nil)
+		if conf != issued.Conf || !strings.HasPrefix(issued.Key, "vpn://") {
+			t.Fatal("administrator export does not match the previously issued profile")
+		}
 		if !strings.Contains(conf, "HeaderProtectionKey = "+node.header) || !strings.Contains(conf, "PublicKey = "+node.public) {
 			t.Fatal("profile does not match its node")
 		}

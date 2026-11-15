@@ -9,7 +9,35 @@ import (
 
 	"dementia/backend/internal/api/httpx"
 	"dementia/backend/internal/store"
+	"github.com/go-chi/chi/v5"
 )
+
+func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	nodeID := chi.URLParam(r, "nodeID")
+	if !httpx.ValidID(nodeID) {
+		httpx.Failure(w, http.StatusBadRequest, "invalid node ID")
+		return
+	}
+	profile, err := h.store.ProfileForSubscription(r.Context(), id, nodeID)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	key, err := profile.AmneziaLink()
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, http.StatusOK, struct {
+		Conf string `json:"conf"`
+		Key  string `json:"key"`
+	}{profile.Conf(), key})
+}
 
 func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 	items, err := h.store.Subscriptions(r.Context())

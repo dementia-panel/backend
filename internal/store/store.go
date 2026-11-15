@@ -353,13 +353,22 @@ func (s Store) PublicSubscription(ctx context.Context, token string) (Subscripti
 }
 
 func (s Store) Profile(ctx context.Context, token, nodeID string) (vpn.ClientProfile, error) {
+	return s.clientProfile(ctx, nodeID, `s.token_hash=$2 AND n.applied_revision=n.revision AND n.last_seen_at>now()-interval '1 minute'`, HashToken(token))
+}
+
+func (s Store) ProfileForSubscription(ctx context.Context, subscriptionID, nodeID string) (vpn.ClientProfile, error) {
+	// Administrators can export the issued profile while it is syncing to the node.
+	return s.clientProfile(ctx, nodeID, `s.id=$2`, subscriptionID)
+}
+
+func (s Store) clientProfile(ctx context.Context, nodeID, condition string, value any) (vpn.ClientProfile, error) {
 	var name, ip, public string
 	var private, header []byte
 	var address, port int
 	err := s.DB.QueryRow(ctx, `SELECT n.name,coalesce(n.endpoint_host,host(n.ip)),coalesce(n.endpoint_port,n.vpn_port),n.public_key,n.header_key,p.private_key,p.address
 		FROM subscriptions s JOIN users u ON u.id=s.user_id JOIN peers p ON p.subscription_id=s.id JOIN nodes n ON n.id=p.node_id
-		WHERE s.token_hash=$1 AND n.id=$2 AND s.enabled AND u.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) AND n.enabled AND n.status='ready'
-		    AND n.applied_revision=n.revision AND n.last_seen_at>now()-interval '1 minute'`, HashToken(token), nodeID).
+		WHERE n.id=$1 AND s.enabled AND u.enabled AND s.expires_at>now() AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)
+		    AND n.enabled AND n.status='ready' AND n.retired_at IS NULL AND `+condition, nodeID, value).
 		Scan(&name, &ip, &port, &public, &header, &private, &address)
 	if err != nil {
 		return vpn.ClientProfile{}, err
