@@ -25,11 +25,11 @@ cd dementia
 ```
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/compose.yaml
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/.env.example -o .env
 ```
 
 ### 3. Fill in `.env`
@@ -96,11 +96,11 @@ cd dementia
 ```
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/compose.yaml
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/v0.1.0/deploy/.env.example -o .env
+curl -fsSL https://raw.githubusercontent.com/dementia-panel/backend/main/deploy/.env.example -o .env
 ```
 
 ### 3. Заполни `.env`

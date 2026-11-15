@@ -77,7 +77,7 @@ services:
 
   frontend:
     <<: [*common, *logging]
-    image: bor333/dementia-panel:0.1.0
+    image: bor333/dementia-panel:0.1.1
     ports:
       - "${PANEL_BIND:-127.0.0.1}:${PANEL_PORT:-8443}:443"
     volumes:
