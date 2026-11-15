@@ -20,7 +20,7 @@ services:
   backend:
     container_name: ${COMPOSE_PROJECT_NAME}-backend
     <<: [*common, *logging]
-    image: bor333/dementia-backend:0.1.0
+    image: bor333/dementia-backend:latest
     stop_grace_period: 30s
     env_file: .env
     environment:
@@ -60,7 +60,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      test: ["CMD-SHELL", "PGPASSWORD=\"$${POSTGRES_PASSWORD}\" psql -X -w -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -Atqc 'SELECT 1'"]
       interval: 3s
       timeout: 5s
       retries: 5
@@ -81,7 +81,7 @@ services:
   frontend:
     container_name: ${COMPOSE_PROJECT_NAME}-panel
     <<: [*common, *logging]
-    image: bor333/dementia-panel:0.1.1
+    image: bor333/dementia-panel:latest
     ports:
       - "${PANEL_BIND:-127.0.0.1}:${PANEL_PORT:-8443}:443"
     volumes:
