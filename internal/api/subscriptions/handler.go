@@ -24,6 +24,7 @@ func Register(r chi.Router, repo store.Store, publicURL string) {
 	r.Get("/users/{id}/subscription", h.assignedPlan)
 	r.Put("/users/{id}/subscription", h.assignPlan)
 	r.Get("/subscriptions", h.subscriptions)
+	r.Get("/subscriptions/{id}/link", h.subscriptionLink)
 	r.Post("/subscriptions", h.createSubscription)
 	r.Patch("/subscriptions/{id}", h.updateSubscription)
 	r.Put("/subscriptions/{id}/nodes", h.replaceSubscriptionNodes)

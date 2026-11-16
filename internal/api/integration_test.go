@@ -657,6 +657,38 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal("same assignment rotated the VPN credentials")
 	}
 
+	linkPath := "/api/admin/subscriptions/" + assignedUser.AccessID + "/link"
+	var savedLink struct{ URL *string }
+	call(http.MethodGet, linkPath, "", nil, 401, nil)
+	call(http.MethodGet, linkPath, admin, nil, 200, &savedLink)
+	if savedLink.URL == nil || *savedLink.URL != assignedUser.URL {
+		t.Fatal("reading the issued link did not preserve its token")
+	}
+	var encrypted []byte
+	if err := pool.QueryRow(ctx, "SELECT token_encrypted FROM subscriptions WHERE id=$1", assignedUser.AccessID).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encrypted, []byte(strings.TrimPrefix(assignedUser.URL, origin+"/s/"))) {
+		t.Fatal("subscription token was stored in plaintext")
+	}
+	if _, err := pool.Exec(ctx, "UPDATE subscriptions SET token_encrypted=NULL WHERE id=$1", assignedUser.AccessID); err != nil {
+		t.Fatal(err)
+	}
+	call(http.MethodGet, linkPath, admin, nil, 200, &savedLink)
+	if savedLink.URL != nil {
+		t.Fatal("a legacy link must not be silently replaced")
+	}
+	var assignedRotated struct{ URL string }
+	call(http.MethodPost, "/api/admin/subscriptions/"+assignedUser.AccessID+"/rotate-link", admin, nil, 200, &assignedRotated)
+	call(http.MethodGet, linkPath, admin, nil, 200, &savedLink)
+	if savedLink.URL == nil || *savedLink.URL != assignedRotated.URL || assignedRotated.URL == assignedUser.URL {
+		t.Fatal("assignedRotated link was not retained")
+	}
+	assignedUser.URL = assignedRotated.URL
+	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != before {
+		t.Fatal("reading or rotating a subscription link changed VPN credentials")
+	}
+
 	var assignedAccess store.Subscription
 	call(http.MethodGet, assignedPath, "", nil, 401, nil)
 	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)

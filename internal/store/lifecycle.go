@@ -53,7 +53,7 @@ func (s Store) DeleteSubscription(ctx context.Context, id string) error {
 
 func (s Store) RevokeSubscription(ctx context.Context, id, token string) error {
 	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, "UPDATE subscriptions SET token_hash=$2 WHERE id=$1", id, HashToken(token))
+		tag, err := tx.Exec(ctx, "UPDATE subscriptions SET token_hash=$2,token_encrypted=$3 WHERE id=$1", id, HashToken(token), s.Vault.Seal(token))
 		if err != nil {
 			return err
 		}

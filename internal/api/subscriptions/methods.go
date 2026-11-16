@@ -349,3 +349,22 @@ func (h *Handler) assignedPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, http.StatusOK, sub)
 }
+
+func (h *Handler) subscriptionLink(w http.ResponseWriter, r *http.Request) {
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	token, err := h.store.SubscriptionToken(r.Context(), id)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	var link *string
+	if token != "" {
+		value := h.publicURL + "/s/" + token
+		link = &value
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.Respond(w, http.StatusOK, map[string]*string{"url": link})
+}

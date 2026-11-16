@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -164,9 +165,9 @@ func (s Store) CreateSubscription(ctx context.Context, userID, name, token strin
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&user); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO subscriptions(user_id,name,token_hash,expires_at)
-			VALUES($1,$2,$3,$4) RETURNING id::text,user_id::text,name,enabled,expires_at`,
-			userID, name, HashToken(token), expires).Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO subscriptions(user_id,name,token_hash,expires_at,token_encrypted)
+			VALUES($1,$2,$3,$4,$5) RETURNING id::text,user_id::text,name,enabled,expires_at`,
+			userID, name, HashToken(token), expires, s.Vault.Seal(token)).Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt); err != nil {
 			return err
 		}
 		for _, nodeID := range nodeIDs {
@@ -321,7 +322,7 @@ func bumpNodes(ctx context.Context, tx pgx.Tx, selection, id string) error {
 }
 
 func (s Store) RotateToken(ctx context.Context, id, token string) error {
-	tag, err := s.DB.Exec(ctx, `UPDATE subscriptions SET token_hash=$2 WHERE id=$1`, id, HashToken(token))
+	tag, err := s.DB.Exec(ctx, `UPDATE subscriptions SET token_hash=$2,token_encrypted=$3 WHERE id=$1`, id, HashToken(token), s.Vault.Seal(token))
 	if err != nil {
 		return err
 	}
@@ -513,4 +514,24 @@ func (s Store) Ack(ctx context.Context, id, token string, revision, restarted in
 	    AND p.current_handshake_at IS DISTINCT FROM r.handshake`, id, handshakes)
 		return err
 	})
+}
+
+// SubscriptionToken returns an existing link without rotating it or changing peers.
+// Legacy subscriptions only stored a hash and cannot recover their original token.
+func (s Store) SubscriptionToken(ctx context.Context, id string) (string, error) {
+	var encrypted, hash []byte
+	if err := s.DB.QueryRow(ctx, `SELECT token_encrypted,token_hash FROM subscriptions WHERE id=$1`, id).Scan(&encrypted, &hash); err != nil {
+		return "", err
+	}
+	if len(encrypted) == 0 {
+		return "", nil
+	}
+	token, err := s.Vault.Open(encrypted)
+	if err != nil {
+		return "", err
+	}
+	if !bytes.Equal(HashToken(token), hash) {
+		return "", errors.New("subscription token integrity check failed")
+	}
+	return token, nil
 }

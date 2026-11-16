@@ -159,10 +159,10 @@ func (s Store) assignSubscriptionPlan(ctx context.Context, tx pgx.Tx, userID str
 				FROM subscription_plans WHERE id=$1 FOR UPDATE`, *planID).Scan(&name, &nodeIDs); err != nil {
 				return err
 			}
-			if err := tx.QueryRow(ctx, `INSERT INTO subscriptions (user_id,plan_id,name,token_hash,expires_at) VALUES($1,$2,$3,$4,NULL)
+			if err := tx.QueryRow(ctx, `INSERT INTO subscriptions (user_id,plan_id,name,token_hash,expires_at,token_encrypted) VALUES($1,$2,$3,$4,NULL,$5)
 				ON CONFLICT (user_id,plan_id) WHERE plan_id IS NOT NULL
 				DO UPDATE SET enabled=true,name=EXCLUDED.name RETURNING id::text,token_hash=$4`,
-				userID, *planID, name, HashToken(token)).Scan(&id, &issued); err != nil {
+				userID, *planID, name, HashToken(token), s.Vault.Seal(token)).Scan(&id, &issued); err != nil {
 				return err
 			}
 			if err := s.replaceSubscriptionNodes(ctx, tx, id, nodeIDs); err != nil {
