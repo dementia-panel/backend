@@ -1,11 +1,13 @@
 package publicsubscription
 
 import (
+	"archive/zip"
 	"bytes"
 	_ "embed"
 	"html/template"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +24,10 @@ type download struct {
 }
 
 type page struct {
-	Name      string     `json:"name"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	Locations []download `json:"locations"`
+	Name      string                      `json:"name"`
+	ExpiresAt *time.Time                  `json:"expires_at"`
+	Locations []download                  `json:"locations"`
+	Branding  *store.SubscriptionBranding `json:"branding,omitempty"`
 }
 
 func (h *Handler) publicPage(r *http.Request) (page, error) {
@@ -110,6 +113,12 @@ func (h *Handler) manifest(w http.ResponseWriter, r *http.Request) {
 		httpx.HandleError(w, err)
 		return
 	}
+	branding, err := h.store.SubscriptionBranding(r.Context())
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	data.Branding = &branding
 	httpx.Respond(w, 200, data)
 }
 
@@ -167,4 +176,70 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".vpn"}))
 	_, _ = w.Write([]byte(link))
+}
+
+func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
+	publicHeaders(w)
+	format := chi.URLParam(r, "format")
+	if format != "vpn" && format != "conf" {
+		httpx.Failure(w, http.StatusNotFound, "unknown config format")
+		return
+	}
+	profiles, err := h.store.PublicProfiles(r.Context(), chi.URLParam(r, "token"))
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	if len(profiles) == 0 {
+		httpx.Failure(w, http.StatusNotFound, "no available profiles")
+		return
+	}
+
+	var data bytes.Buffer
+	archive := zip.NewWriter(&data)
+	for i, profile := range profiles {
+		content := profile.Conf()
+		if format == "vpn" {
+			content, err = profile.AmneziaLink()
+			if err != nil {
+				httpx.HandleError(w, err)
+				return
+			}
+		}
+		file, err := archive.Create(archiveFilename(profile.Name, i+1, format))
+		if err == nil {
+			_, err = file.Write([]byte(content))
+		}
+		if err != nil {
+			httpx.HandleError(w, err)
+			return
+		}
+	}
+	if err := archive.Close(); err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="subscription-`+format+`.zip"`)
+	w.Header().Set("Content-Length", strconv.Itoa(data.Len()))
+	_, _ = data.WriteTo(w)
+}
+
+func archiveFilename(name string, index int, format string) string {
+	// Keep tunnel names within the 15-character limit on AmneziaWG Android.
+	prefix := strconv.Itoa(index) + "-"
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '-'
+		}
+	}, name)
+	safe = strings.Trim(safe, "-")
+	if safe == "" {
+		safe = "server"
+	}
+	safe = strings.TrimRight(safe[:min(len(safe), 15-len(prefix))], "-")
+	return prefix + safe + "." + format
 }

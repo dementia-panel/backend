@@ -304,7 +304,9 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		PlanID json.RawMessage `json:"plan_id"`
+		PlanID    json.RawMessage `json:"plan_id"`
+		Enabled   *bool           `json:"enabled"`
+		ExpiresAt json.RawMessage `json:"expires_at"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
@@ -314,8 +316,13 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, http.StatusBadRequest, "plan_id must be a UUID or null")
 		return
 	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil && json.Unmarshal(req.ExpiresAt, &expiresAt) != nil {
+		httpx.Failure(w, http.StatusBadRequest, "expires_at must be an RFC3339 timestamp or null")
+		return
+	}
 	token := store.NewToken()
-	subID, issued, err := h.store.AssignSubscriptionPlan(r.Context(), id, planID, token)
+	subID, issued, err := h.store.AssignSubscriptionPlanAccess(r.Context(), id, planID, token, req.Enabled, expiresAt, req.ExpiresAt != nil)
 	if err != nil {
 		httpx.HandleError(w, err)
 		return
@@ -328,4 +335,17 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 		result.URL = h.publicURL + "/s/" + token
 	}
 	httpx.Respond(w, http.StatusOK, result)
+}
+
+func (h *Handler) assignedPlan(w http.ResponseWriter, r *http.Request) {
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	sub, err := h.store.AssignedSubscription(r.Context(), id)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, http.StatusOK, sub)
 }

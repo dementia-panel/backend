@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/zlib"
 	"context"
@@ -8,6 +9,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,6 +153,26 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if integrations.Telegram.State != "disabled" || integrations.Webhook.State != "disabled" {
 		t.Fatal("missing integration defaults")
 	}
+	const brandingPath = "/api/admin/settings/subscription-branding"
+	var branding store.SubscriptionBranding
+	call(http.MethodGet, brandingPath, "", nil, 401, nil)
+	call(http.MethodPut, brandingPath, "", store.SubscriptionBranding{Name: "Example"}, 401, nil)
+	call(http.MethodGet, brandingPath, admin, nil, 200, &branding)
+	if branding.Name != "dementia" || branding.Logo != "" {
+		t.Fatalf("unexpected default branding: %+v", branding)
+	}
+	call(http.MethodPut, brandingPath, admin, store.SubscriptionBranding{Name: "Example", Logo: "data:image/svg+xml;base64,AA=="}, 400, nil)
+	var logoImage bytes.Buffer
+	if err := png.Encode(&logoImage, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	logo := "data:image/png;base64," + base64.StdEncoding.EncodeToString(logoImage.Bytes())
+	customBranding := store.SubscriptionBranding{Name: "Northern Relay", Logo: logo}
+	call(http.MethodPut, brandingPath, admin, customBranding, 200, &branding)
+	if branding != customBranding {
+		t.Fatal("updated branding does not match the submitted data")
+	}
+
 	// Recreate the handler to simulate restarting the backend.
 	handler = (&api.API{Store: repo, JWTSigningKey: signingKey, PublicURL: origin, Context: ctx}).Handler()
 	call(http.MethodGet, "/api/auth/me", admin, nil, 200, nil)
@@ -319,12 +342,16 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	}
 	html := call(http.MethodGet, path, "", nil, 200, nil)
 	var manifest struct {
+		Branding  store.SubscriptionBranding `json:"branding"`
 		Locations []struct {
 			ID     string `json:"id"`
 			KeyURL string `json:"key_url"`
 		} `json:"locations"`
 	}
 	call(http.MethodGet, path+"/manifest", "", nil, 200, &manifest)
+	if manifest.Branding != customBranding {
+		t.Fatal("public manifest does not include the saved branding")
+	}
 	if len(manifest.Locations) != len(nodes) {
 		t.Fatal("manifest does not include all nodes")
 	}
@@ -346,6 +373,29 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if keys[nodes[0].id] == keys[nodes[1].id] {
 		t.Fatal("different nodes have the same text key")
 	}
+	for extension, expected := range map[string]string{"conf": "[Interface]", "vpn": "vpn://"} {
+		raw := call(http.MethodGet, path+"/configs/"+extension+".zip", "", nil, 200, nil)
+		reader, err := zip.NewReader(strings.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(reader.File) != len(nodes) {
+			t.Fatalf("archive %s does not contain all available servers", extension)
+		}
+		for _, file := range reader.File {
+			profile, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := io.ReadAll(profile)
+			profile.Close()
+			if err != nil || !strings.HasPrefix(string(data), expected) || !strings.HasSuffix(file.Name, "."+extension) {
+				t.Fatalf("archive %s contains an invalid config", extension)
+			}
+		}
+	}
+	call(http.MethodGet, "/s/invalid/configs/conf.zip", "", nil, 404, nil)
+
 	nodePath := "/api/admin/nodes/" + nodes[0].id
 	agentPath := "/api/agent/nodes/" + nodes[0].id
 	const newName = "Финляндия 2"
@@ -605,6 +655,39 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	after := call(http.MethodGet, profilePath, admin, nil, 200, nil)
 	if same.ID != assignedUser.AccessID || same.URL != "" || before != after {
 		t.Fatal("same assignment rotated the VPN credentials")
+	}
+
+	var assignedAccess store.Subscription
+	call(http.MethodGet, assignedPath, "", nil, 401, nil)
+	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
+	expiry := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Second)
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID, "enabled": false, "expires_at": expiry}, 200, nil)
+	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
+	if assignedAccess.Enabled || assignedAccess.ExpiresAt == nil || !assignedAccess.ExpiresAt.Equal(expiry) {
+		t.Fatalf("assignment did not persist disabled access and expiration: %+v", assignedAccess)
+	}
+	call(http.MethodGet, strings.TrimPrefix(assignedUser.URL, origin)+"/manifest", "", nil, 404, nil)
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID, "enabled": true}, 200, nil)
+	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
+	if !assignedAccess.Enabled || assignedAccess.ExpiresAt == nil || !assignedAccess.ExpiresAt.Equal(expiry) {
+		t.Fatal("enabling access cleared its expiration")
+	}
+
+	var datedManifest struct {
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
+	call(http.MethodGet, strings.TrimPrefix(assignedUser.URL, origin)+"/manifest", "", nil, 200, &datedManifest)
+	if datedManifest.ExpiresAt == nil || !datedManifest.ExpiresAt.Equal(expiry) {
+		t.Fatal("public page did not receive the configured expiration")
+	}
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID, "expires_at": "invalid"}, 400, nil)
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID, "expires_at": nil}, 200, nil)
+	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
+	if assignedAccess.ExpiresAt != nil {
+		t.Fatal("explicit null did not clear the expiration")
+	}
+	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
+		t.Fatal("editing access settings rotated the VPN key")
 	}
 	call(http.MethodPut, "/api/admin/subscription-plans/"+plan.ID, admin, map[string]any{"name": "Renamed", "node_ids": []string{nodes[1].id}}, 200, nil)
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {

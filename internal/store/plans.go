@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -102,11 +103,47 @@ func (s Store) DeleteSubscriptionPlan(ctx context.Context, id string) error {
 
 // AssignSubscriptionPlan changes access only on explicit assignment and reuses keys for the same plan.
 func (s Store) AssignSubscriptionPlan(ctx context.Context, userID string, planID *string, token string) (id string, issued bool, err error) {
+	return s.AssignSubscriptionPlanAccess(ctx, userID, planID, token, nil, nil, false)
+}
+
+func (s Store) AssignSubscriptionPlanAccess(ctx context.Context, userID string, planID *string, token string, enabled *bool, expiresAt *time.Time, setExpiry bool) (id string, issued bool, err error) {
 	err = pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
 		id, issued, err = s.assignSubscriptionPlan(ctx, tx, userID, planID, token)
-		return err
+		if err != nil || id == "" || (enabled == nil && !setExpiry) {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE subscriptions SET enabled=coalesce($2,enabled),
+			expires_at=CASE WHEN $3 THEN $4 ELSE expires_at END WHERE id=$1`, id, enabled, setExpiry, expiresAt); err != nil {
+			return err
+		}
+		return bumpNodes(ctx, tx, `SELECT node_id FROM peers WHERE subscription_id=$1`, id)
 	})
 	return
+}
+
+func (s Store) AssignedSubscription(ctx context.Context, userID string) (*Subscription, error) {
+	var sub Subscription
+	err := s.DB.QueryRow(ctx, `SELECT s.id::text,s.user_id::text,s.name,s.enabled,s.expires_at,
+		s.traffic_limit_bytes,s.traffic_used_bytes,s.plan_id::text,
+		ARRAY(SELECT node_id::text FROM peers WHERE subscription_id=s.id ORDER BY node_id)
+		FROM users u JOIN subscriptions s ON s.user_id=u.id AND s.plan_id=u.subscription_plan_id
+		WHERE u.id=$1`, userID).Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt,
+		&sub.TrafficLimit, &sub.TrafficUsed, &sub.PlanID, &sub.NodeIDs)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		// Check an unassigned user separately so a missing user still produces 404.
+		var assigned bool
+		if checkErr := s.DB.QueryRow(ctx, `SELECT subscription_plan_id IS NOT NULL FROM users WHERE id=$1`, userID).Scan(&assigned); checkErr != nil {
+			return nil, checkErr
+		}
+		if !assigned {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &sub, nil
 }
 
 func (s Store) assignSubscriptionPlan(ctx context.Context, tx pgx.Tx, userID string, planID *string, token string) (id string, issued bool, err error) {
@@ -124,7 +161,7 @@ func (s Store) assignSubscriptionPlan(ctx context.Context, tx pgx.Tx, userID str
 			}
 			if err := tx.QueryRow(ctx, `INSERT INTO subscriptions (user_id,plan_id,name,token_hash,expires_at) VALUES($1,$2,$3,$4,NULL)
 				ON CONFLICT (user_id,plan_id) WHERE plan_id IS NOT NULL
-				DO UPDATE SET enabled=true,name=EXCLUDED.name,expires_at=NULL RETURNING id::text,token_hash=$4`,
+				DO UPDATE SET enabled=true,name=EXCLUDED.name RETURNING id::text,token_hash=$4`,
 				userID, *planID, name, HashToken(token)).Scan(&id, &issued); err != nil {
 				return err
 			}

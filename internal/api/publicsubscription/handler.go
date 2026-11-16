@@ -15,6 +15,7 @@ func Register(r chi.Router, repo store.Store, publicURL string) {
 	r.Get("/s/{token}", h.subscriptionPage)
 	r.Get("/s/assets/copy-key.js", copyKeyScript)
 	r.Get("/s/{token}/manifest", h.manifest)
+	r.Get("/s/{token}/configs/{format}.zip", h.configArchive)
 	r.Get("/s/{token}/nodes/{id}.conf", h.profile)
 	r.Get("/s/{token}/nodes/{id}.vpn", h.amneziaProfile)
 	r.Get("/s/{token}/nodes/{id}.key", h.amneziaKey)
