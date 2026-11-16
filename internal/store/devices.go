@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"dementia/backend/internal/vpn"
@@ -202,4 +203,32 @@ func (s Store) Device(ctx context.Context, userID, deviceID string) (Device, err
 	err := s.DB.QueryRow(ctx, selectDevices+` WHERE d.user_id=$1 AND d.id=$2 GROUP BY d.id`, userID, deviceID).Scan(
 		&device.ID, &device.UserID, &device.Name, &device.CreatedAt, &device.UpdatedAt, &device.LastConnectedAt, &device.Online)
 	return device, err
+}
+
+// DeviceSubscriptionToken returns the existing bearer token without rotating VPN keys.
+func (s Store) DeviceSubscriptionToken(ctx context.Context, userID, deviceID, subscriptionID string) (string, error) {
+	token := NewToken()
+	var encrypted []byte
+	err := s.DB.QueryRow(ctx, `INSERT INTO device_subscription_links(subscription_id,device_id,token_hash,token_encrypted,subscription_token_hash)
+      SELECT s.id,d.id,$3,$4,s.token_hash FROM subscriptions s JOIN user_devices d ON d.user_id=s.user_id
+      WHERE s.user_id=$1 AND d.id=$2 AND s.id=$5
+      ON CONFLICT(subscription_id,device_id) DO UPDATE SET
+      token_hash=CASE WHEN device_subscription_links.subscription_token_hash=EXCLUDED.subscription_token_hash THEN device_subscription_links.token_hash ELSE EXCLUDED.token_hash END,
+      token_encrypted=CASE WHEN device_subscription_links.subscription_token_hash=EXCLUDED.subscription_token_hash THEN device_subscription_links.token_encrypted ELSE EXCLUDED.token_encrypted END,
+      subscription_token_hash=EXCLUDED.subscription_token_hash
+      RETURNING token_encrypted`, userID, deviceID, HashToken(token), s.Vault.Seal(token), subscriptionID).Scan(&encrypted)
+	if err != nil {
+		return "", err
+	}
+	return s.Vault.Open(encrypted)
+}
+
+func (s Store) PublicDevices(ctx context.Context, subscriptionID, token string) ([]Device, error) {
+	rows, err := s.DB.Query(ctx, strings.Replace(selectDevices, "LEFT JOIN peers p ON p.device_id=d.id", "LEFT JOIN peers p ON p.device_id=d.id AND p.subscription_id=$1", 1)+` WHERE EXISTS(SELECT 1 FROM subscriptions a WHERE a.id=$1 AND a.user_id=d.user_id
+      AND (a.token_hash=$2 OR EXISTS(SELECT 1 FROM device_subscription_links l WHERE l.subscription_id=a.id AND l.subscription_token_hash=a.token_hash AND l.device_id=d.id AND l.token_hash=$2)))
+      GROUP BY d.id ORDER BY d.created_at,d.id`, subscriptionID, HashToken(token))
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[Device])
 }

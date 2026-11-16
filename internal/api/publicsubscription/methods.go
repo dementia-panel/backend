@@ -14,7 +14,6 @@ import (
 	"dementia/backend/internal/api/httpx"
 	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 )
 
 type download struct {
@@ -25,8 +24,10 @@ type download struct {
 }
 
 type publicDevice struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Online          bool       `json:"online"`
+	LastConnectedAt *time.Time `json:"last_connected_at"`
 }
 
 type page struct {
@@ -43,14 +44,13 @@ func (h *Handler) publicPage(r *http.Request) (page, error) {
 	if err != nil {
 		return page{}, err
 	}
-	var devices []publicDevice
-	rows, err := h.store.DB.Query(r.Context(), `SELECT d.id::text,d.name FROM user_devices d JOIN subscriptions s ON s.user_id=d.user_id WHERE s.id=$1 ORDER BY d.created_at,d.id`, sub.ID)
+	records, err := h.store.PublicDevices(r.Context(), sub.ID, token)
 	if err != nil {
 		return page{}, err
 	}
-	devices, err = pgx.AppendRows([]publicDevice{}, rows, pgx.RowToStructByPos[publicDevice])
-	if err != nil {
-		return page{}, err
+	devices := make([]publicDevice, 0, len(records))
+	for _, d := range records {
+		devices = append(devices, publicDevice{ID: d.ID, Name: d.Name, Online: d.Online, LastConnectedAt: d.LastConnectedAt})
 	}
 	result := page{Devices: devices, Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
 	for _, l := range locations {

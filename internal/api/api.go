@@ -60,7 +60,7 @@ func (a *API) Handler() http.Handler {
 			r.Use(apitokens.AllowBearer(a.Store, admin.RequireSession))
 			nodes.Register(r, a.Store, a.PublicURL, a.Context, &a.Workers)
 			users.Register(r, a.Store, a.PublicURL)
-			devices.Register(r, a.Store)
+			devices.Register(r, a.Store, a.PublicURL)
 			settings.RegisterDeviceSettings(r, a.Store)
 			subscriptions.Register(r, a.Store, a.PublicURL)
 			traffic.Register(r, a.Store)

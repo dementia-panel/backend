@@ -823,7 +823,61 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	publicDevicePath := strings.TrimPrefix(assignedUser.URL, origin) + "/devices/" + extra.ID + "/nodes/" + nodes[1].id + ".conf"
 	call(http.MethodGet, publicDevicePath, "", nil, 200, nil)
 	call(http.MethodGet, strings.TrimPrefix(assignedUser.URL, origin)+"/devices/"+store.NewToken()+"/nodes/"+nodes[1].id+".conf", "", nil, 400, nil)
+
+	// Device bearer links are stable, isolated, and usable by external API clients.
+	var deviceLink, firstLink struct {
+		URL string `json:"url"`
+	}
+	linkAPI := extraPath + "/link?subscription_id=" + assignedAccess.ID
+	call(http.MethodGet, linkAPI, deviceService.Token, nil, 200, &deviceLink)
+	call(http.MethodGet, linkAPI, admin, nil, 200, &firstLink)
+	if deviceLink.URL != firstLink.URL {
+		t.Fatal("reading a device link rotated its token")
+	}
+	call(http.MethodGet, telegramUserPath+"/devices/"+originalDevice+"/link?subscription_id="+assignedAccess.ID, admin, nil, 200, &firstLink)
+	if firstLink.URL == deviceLink.URL {
+		t.Fatal("devices share subscription links")
+	}
+	call(http.MethodGet, "/api/admin/users/"+other.ID+"/devices/"+extra.ID+"/link?subscription_id="+assignedAccess.ID, admin, nil, 404, nil)
+	deviceBase := strings.TrimPrefix(deviceLink.URL, origin)
+	var deviceManifest struct {
+		Devices []struct {
+			ID     string
+			Online bool
+		}
+	}
+	call(http.MethodGet, deviceBase+"/manifest", "", nil, 200, &deviceManifest)
+	if len(deviceManifest.Devices) != 1 || deviceManifest.Devices[0].ID != extra.ID || !deviceManifest.Devices[0].Online {
+		t.Fatalf("device link leaked devices or lost online status: %+v", deviceManifest)
+	}
+	// Rotating the parent must revoke every device bearer link as well.
+	rotationToken := store.NewToken()
+	if err := repo.RotateToken(ctx, assignedAccess.ID, rotationToken); err != nil {
+		t.Fatal(err)
+	}
+	call(http.MethodGet, deviceBase+"/manifest", "", nil, 404, nil)
+	call(http.MethodGet, linkAPI, admin, nil, 200, &deviceLink)
+	if strings.TrimPrefix(deviceLink.URL, origin) == deviceBase {
+		t.Fatal("parent rotation reused a revoked device token")
+	}
+	originalToken := strings.TrimPrefix(assignedUser.URL, origin+"/s/")
+	if err := repo.RotateToken(ctx, assignedAccess.ID, originalToken); err != nil {
+		t.Fatal(err)
+	}
+	call(http.MethodGet, linkAPI, admin, nil, 200, &deviceLink)
+	deviceBase = strings.TrimPrefix(deviceLink.URL, origin)
+	configURL := deviceBase + "/nodes/" + nodes[1].id + ".conf"
+	var exportedDevice map[string]string
+	if err := json.Unmarshal([]byte(extraProfile), &exportedDevice); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(http.MethodGet, configURL, "", nil, 200, nil); got != exportedDevice["conf"] {
+		t.Fatal("device link returned a different device's credentials")
+	}
+	call(http.MethodGet, deviceBase+"/devices/"+originalDevice+"/nodes/"+nodes[1].id+".conf", "", nil, 404, nil)
 	call(http.MethodDelete, extraPath, deviceService.Token, nil, 204, nil)
+	call(http.MethodGet, deviceBase+"/manifest", "", nil, 404, nil)
+	call(http.MethodGet, configURL, "", nil, 404, nil)
 	call(http.MethodGet, deviceProfilePath, admin, nil, 404, nil)
 	call(http.MethodGet, publicDevicePath, "", nil, 404, nil)
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {

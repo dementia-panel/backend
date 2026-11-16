@@ -39,3 +39,11 @@ The public subscription manifest includes `devices` (`id`, `name`). Individual d
 The subscription page supports `?device_id={device_id}` and a device selector. Existing unscoped profile URLs remain compatible with the earliest remaining device. A subscription token authorizes access to its user's device profiles; knowing a device UUID alone grants no access. An exported profile remains usable while its user, subscription and device are active and their keys are synchronized.
 
 Device events use the `user` webhook group: `user.device_created`, `user.device_updated` and `user.device_deleted`. Payloads contain device and user identifiers and the device name, never private keys.
+
+## Device subscription links (v0.6.0)
+
+`GET /api/admin/users/{user_ref}/devices/{device_id}/link?subscription_id={subscription_uuid}` returns `{ "url": "https://panel.example/s/<device-token>" }`. It accepts administrator sessions and registered API service tokens; `user_ref` is a UUID or Telegram ID. The subscription and device must belong to that user. Repeated calls return the same link without replacing VPN credentials.
+
+Each bearer token grants access to exactly one device across the subscription's servers. Its manifest includes only that device, with `online` and `last_connected_at`. Online status uses recent node handshake reports, not browser visits. The subscription page refreshes this information every 15 seconds while visible. Deleting a device or subscription revokes the link; rotating or revoking the parent subscription invalidates its device links as well. A subsequent API call issues a replacement link. Tokens are stored hashed for lookup and encrypted for retrieval. Migration 000023 runs automatically; no new environment variables are required.
+
+Older subscription-wide links remain compatible and can access all devices. Share the new device-specific links when distributing access to individual devices.

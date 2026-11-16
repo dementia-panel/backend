@@ -376,7 +376,7 @@ func (s Store) PublicSubscription(ctx context.Context, token string) (Subscripti
 	err := pgx.BeginTxFunc(ctx, s.DB, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `SELECT s.id::text,s.name,s.enabled,s.expires_at
 			FROM subscriptions s JOIN users u ON u.id=s.user_id
-			WHERE s.token_hash=$1 AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)`, HashToken(token)).
+			WHERE (s.token_hash=$1 OR EXISTS(SELECT 1 FROM device_subscription_links l JOIN user_devices d ON d.id=l.device_id AND d.user_id=s.user_id WHERE l.subscription_id=s.id AND l.subscription_token_hash=s.token_hash AND l.token_hash=$1)) AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)`, HashToken(token)).
 			Scan(&sub.ID, &sub.Name, &sub.Enabled, &sub.ExpiresAt)
 		if err != nil {
 			return err
@@ -407,7 +407,8 @@ const clientProfilesQuery = `SELECT n.name,coalesce(n.endpoint_host,host(n.ip)),
 	    AND n.enabled AND n.status='ready' AND n.retired_at IS NULL AND `
 
 func (s Store) Profile(ctx context.Context, token, nodeID string, deviceIDs ...string) (vpn.ClientProfile, error) {
-	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND s.token_hash=$2 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id AND (nullif($3,'')::uuid IS NULL OR d.id=nullif($3,'')::uuid) ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile, nodeID, HashToken(token), firstDeviceID(deviceIDs)))
+	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id
+        AND (s.token_hash=$2 OR EXISTS(SELECT 1 FROM device_subscription_links l WHERE l.subscription_id=s.id AND l.subscription_token_hash=s.token_hash AND l.device_id=d.id AND l.token_hash=$2)) AND (nullif($3,'')::uuid IS NULL OR d.id=nullif($3,'')::uuid) ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile, nodeID, HashToken(token), firstDeviceID(deviceIDs)))
 }
 
 func (s Store) ProfileForSubscription(ctx context.Context, subscriptionID, nodeID string, deviceIDs ...string) (vpn.ClientProfile, error) {
@@ -416,7 +417,8 @@ func (s Store) ProfileForSubscription(ctx context.Context, subscriptionID, nodeI
 }
 
 func (s Store) PublicProfiles(ctx context.Context, token string) ([]vpn.ClientProfile, error) {
-	rows, err := s.DB.Query(ctx, clientProfilesQuery+`s.token_hash=$1 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile+` ORDER BY n.name,n.id`, HashToken(token))
+	rows, err := s.DB.Query(ctx, clientProfilesQuery+`p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id AND
+        (s.token_hash=$1 OR EXISTS(SELECT 1 FROM device_subscription_links l WHERE l.subscription_id=s.id AND l.subscription_token_hash=s.token_hash AND l.device_id=d.id AND l.token_hash=$1)) ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile+` ORDER BY n.name,n.id`, HashToken(token))
 	if err != nil {
 		return nil, err
 	}
@@ -488,6 +490,7 @@ func (s Store) State(ctx context.Context, id, token string) (State, error) {
 			if err := rows.Scan(&p.PublicKey, &addr, &p.ExpiresAt); err != nil {
 				return err
 			}
+			p.ExpiresAt = p.ExpiresAt.UTC()
 			p.Address = vpn.Address(addr)
 			state.Peers = append(state.Peers, p)
 		}

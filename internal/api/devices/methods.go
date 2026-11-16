@@ -159,3 +159,26 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, 200, device)
 }
+
+func (h *Handler) link(w http.ResponseWriter, r *http.Request) {
+	user := httpx.UserIDParam(w, r, h.store)
+	if user == "" {
+		return
+	}
+	device := deviceID(w, r)
+	if device == "" {
+		return
+	}
+	subscription := r.URL.Query().Get("subscription_id")
+	if !httpx.ValidID(subscription) {
+		httpx.Failure(w, 400, "invalid subscription_id")
+		return
+	}
+	token, err := h.store.DeviceSubscriptionToken(r.Context(), user, device, subscription)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.Respond(w, 200, map[string]string{"url": h.publicURL + "/s/" + token})
+}
