@@ -17,7 +17,9 @@ import (
 )
 
 // These values must match the server configuration in node/entrypoint.sh.
-const Parameters = "S1 = 32\nS2 = 48\nS3 = 16\nS4 = 24\nH1 = 14581001\nH2 = 14581002\nH3 = 14581003\nH4 = 14581004\n"
+// Explicit zero junk settings are required: AmneziaVPN on iOS otherwise drops
+// all AWG settings, including padding, magic headers and HeaderProtectionKey.
+const Parameters = "Jc = 0\nJmin = 0\nJmax = 0\nS1 = 32\nS2 = 48\nS3 = 16\nS4 = 24\nH1 = 14581001\nH2 = 14581002\nH3 = 14581003\nH4 = 14581004\n"
 
 func KeyPair() (private, public string, err error) {
 	key := make([]byte, 32)
