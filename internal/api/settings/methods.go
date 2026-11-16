@@ -3,6 +3,7 @@ package settings
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -75,4 +76,31 @@ func (h *Handler) updateBranding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.Respond(w, http.StatusOK, req)
+}
+
+func (h *Handler) deviceSettings(w http.ResponseWriter, r *http.Request) {
+	limit, err := h.store.DefaultDeviceLimit(r.Context())
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, 200, map[string]*int{"default_device_limit": limit})
+}
+func (h *Handler) saveDeviceSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Limit json.RawMessage `json:"default_device_limit"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	var limit *int
+	if len(req.Limit) == 0 || json.Unmarshal(req.Limit, &limit) != nil || (limit != nil && (*limit < 1 || *limit > 10000)) {
+		httpx.Failure(w, 400, "default_device_limit must be 1–10000 or null")
+		return
+	}
+	if err := h.store.SetDefaultDeviceLimit(r.Context(), limit); err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, 200, map[string]*int{"default_device_limit": limit})
 }

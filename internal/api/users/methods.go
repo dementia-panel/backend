@@ -19,7 +19,7 @@ func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) user(w http.ResponseWriter, r *http.Request) {
-	id := httpx.IDParam(w, r)
+	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
@@ -76,7 +76,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
-	id := httpx.IDParam(w, r)
+	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
@@ -118,7 +118,7 @@ func validUsername(username string) bool {
 }
 
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
-	id := httpx.IDParam(w, r)
+	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
@@ -142,12 +142,18 @@ func (h *Handler) bulkEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	seen := make(map[string]bool, len(req.IDs))
-	for _, id := range req.IDs {
-		if !httpx.ValidID(id) || seen[id] {
+	for index, value := range req.IDs {
+		id := httpx.UserReference(w, r, h.store, value)
+		if id == "" {
+			return
+		}
+		req.IDs[index] = id
+		if seen[id] {
 			httpx.Failure(w, http.StatusBadRequest, "provide unique user IDs")
 			return
 		}
 		seen[id] = true
+		req.IDs[index] = id
 	}
 	updated, err := h.store.BulkUserEnabled(r.Context(), req.IDs, *req.Enabled)
 	if err != nil {

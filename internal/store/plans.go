@@ -125,7 +125,7 @@ func (s Store) AssignedSubscription(ctx context.Context, userID string) (*Subscr
 	var sub Subscription
 	err := s.DB.QueryRow(ctx, `SELECT s.id::text,s.user_id::text,s.name,s.enabled,s.expires_at,
 		s.traffic_limit_bytes,s.traffic_used_bytes,s.plan_id::text,
-		ARRAY(SELECT node_id::text FROM peers WHERE subscription_id=s.id ORDER BY node_id)
+		ARRAY(SELECT node_id::text FROM subscription_nodes WHERE subscription_id=s.id ORDER BY node_id)
 		FROM users u JOIN subscriptions s ON s.user_id=u.id AND s.plan_id=u.subscription_plan_id
 		WHERE u.id=$1`, userID).Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt,
 		&sub.TrafficLimit, &sub.TrafficUsed, &sub.PlanID, &sub.NodeIDs)
@@ -154,6 +154,9 @@ func (s Store) assignSubscriptionPlan(ctx context.Context, tx pgx.Tx, userID str
 		}
 		var nodeIDs []string
 		if planID != nil {
+			if err := s.ensureInitialDevice(ctx, tx, userID); err != nil {
+				return err
+			}
 			var name string
 			if err := tx.QueryRow(ctx, `SELECT name,ARRAY(SELECT node_id::text FROM subscription_plan_nodes WHERE plan_id=$1 ORDER BY node_id)
 				FROM subscription_plans WHERE id=$1 FOR UPDATE`, *planID).Scan(&name, &nodeIDs); err != nil {

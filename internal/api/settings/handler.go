@@ -17,3 +17,9 @@ func Register(r chi.Router, repo store.Store, status func() integration.Snapshot
 	r.Get("/settings/subscription-branding", h.branding)
 	r.Put("/settings/subscription-branding", h.updateBranding)
 }
+
+func RegisterDeviceSettings(r chi.Router, repo store.Store) {
+	h := &Handler{store: repo}
+	r.Get("/settings/devices", h.deviceSettings)
+	r.Put("/settings/devices", h.saveDeviceSettings)
+}

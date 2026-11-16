@@ -721,6 +721,132 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
 		t.Fatal("editing access settings rotated the VPN key")
 	}
+
+	// Device defaults are copied only to newly created users.
+	call(http.MethodGet, "/api/admin/settings/devices", "", nil, 401, nil)
+	call(http.MethodPut, "/api/admin/settings/devices", admin, map[string]any{"default_device_limit": 2}, 200, nil)
+	var other store.User
+	call(http.MethodPost, "/api/admin/users", admin, map[string]any{"username": "device-test-user"}, 201, &other)
+	if other.DeviceLimit == nil || *other.DeviceLimit != 2 {
+		t.Fatal("new user did not inherit default device limit")
+	}
+	call(http.MethodPut, "/api/admin/settings/devices", admin, map[string]any{"default_device_limit": nil}, 200, nil)
+	var unlimitedUser store.User
+	call(http.MethodPost, "/api/admin/users", admin, map[string]any{"username": "unlimited-device-user"}, 201, &unlimitedUser)
+	if unlimitedUser.DeviceLimit != nil {
+		t.Fatal("unlimited default was not applied")
+	}
+	call(http.MethodGet, "/api/admin/users/"+other.ID, admin, nil, 200, &other)
+	if other.DeviceLimit == nil || *other.DeviceLimit != 2 {
+		t.Fatal("default change affected an existing user")
+	}
+	call(http.MethodPut, "/api/admin/settings/devices", admin, map[string]any{"default_device_limit": 0}, 400, nil)
+	// UUID and Telegram references work for both user details and device routes.
+	call(http.MethodPatch, "/api/admin/users/"+assignedUser.ID, admin, map[string]any{"telegram_id": 987654321}, 204, nil)
+	telegramUserPath := "/api/admin/users/987654321"
+	var resolved store.User
+	call(http.MethodGet, telegramUserPath, admin, nil, 200, &resolved)
+	if resolved.ID != assignedUser.ID {
+		t.Fatal("Telegram lookup resolved the wrong user")
+	}
+	call(http.MethodGet, telegramUserPath+"/subscription", admin, nil, 200, nil)
+	call(http.MethodGet, "/api/admin/traffic?telegram_id=987654321", admin, nil, 200, nil)
+	call(http.MethodPost, "/api/admin/users/bulk/enabled", admin, map[string]any{"ids": []string{"987654321"}, "enabled": true}, 200, nil)
+	call(http.MethodPut, telegramUserPath+"/device-limit", admin, map[string]any{"device_limit": 2}, 204, nil)
+	var devices []store.Device
+	call(http.MethodGet, telegramUserPath+"/devices", admin, nil, 200, &devices)
+	if len(devices) != 1 {
+		t.Fatal("initial subscription must create one device")
+	}
+	originalDevice := devices[0].ID
+	// Racing issuances must not bypass the per-user device limit.
+	type deviceResult struct {
+		device store.Device
+		err    error
+	}
+	results := make(chan deviceResult, 8)
+	for index := 0; index < 8; index++ {
+		go func() {
+			device, err := repo.CreateDevice(ctx, assignedUser.ID, "Phone")
+			results <- deviceResult{device, err}
+		}()
+	}
+	var extra store.Device
+	successful := 0
+	for index := 0; index < 8; index++ {
+		result := <-results
+		if result.err == nil {
+			successful++
+			extra = result.device
+		} else if !errors.Is(result.err, store.ErrDeviceLimit) {
+			t.Fatal(result.err)
+		}
+	}
+	if successful != 1 {
+		t.Fatalf("device limit raced: %d issuances succeeded", successful)
+	}
+	call(http.MethodPost, telegramUserPath+"/devices", admin, map[string]any{"name": "One too many"}, 409, nil)
+	extraPath := telegramUserPath + "/devices/" + extra.ID
+	deviceProfilePath := extraPath + "/nodes/" + nodes[1].id + "/profile"
+	call(http.MethodGet, extraPath, admin, nil, 200, nil)
+	call(http.MethodGet, "/api/admin/users/"+other.ID+"/devices/"+extra.ID, admin, nil, 404, nil)
+	extraProfile := call(http.MethodGet, deviceProfilePath, admin, nil, 200, nil)
+	if extraProfile == after {
+		t.Fatal("devices share VPN credentials")
+	}
+	call(http.MethodPatch, extraPath, admin, map[string]any{"name": "Work phone"}, 204, nil)
+	if got := call(http.MethodGet, deviceProfilePath, admin, nil, 200, nil); got != extraProfile {
+		t.Fatal("renaming a device rotated keys")
+	}
+	call(http.MethodDelete, "/api/admin/users/"+other.ID+"/devices/"+extra.ID, admin, nil, 404, nil)
+	call(http.MethodGet, deviceProfilePath, admin, nil, 200, nil)
+	// Authenticated external service tokens can manage devices and export profiles.
+	var deviceService struct{ Token string }
+	call(http.MethodPost, "/api/admin/api-tokens", admin, map[string]any{"name": "device-service"}, 201, &deviceService)
+	call(http.MethodGet, deviceProfilePath, deviceService.Token, nil, 200, nil)
+	// Both devices are independently synchronized and reported as connected.
+	var deviceState store.State
+	deviceAgentPath := "/api/agent/nodes/" + nodes[1].id
+	call(http.MethodGet, deviceAgentPath+"/state", nodes[1].token, nil, 200, &deviceState)
+	if len(deviceState.Peers) != 2 {
+		t.Fatalf("expected two independent peers, got %d", len(deviceState.Peers))
+	}
+	deviceHandshakes := map[string]int64{}
+	for _, peer := range deviceState.Peers {
+		deviceHandshakes[peer.PublicKey] = time.Now().Unix()
+	}
+	call(http.MethodPost, deviceAgentPath+"/ack", nodes[1].token, map[string]any{"revision": deviceState.Revision, "handshakes": deviceHandshakes}, 200, nil)
+	call(http.MethodGet, telegramUserPath, admin, nil, 200, &resolved)
+	if resolved.DeviceCount != 2 || resolved.OnlineDeviceCount != 2 {
+		t.Fatalf("wrong device counts: %+v", resolved)
+	}
+	publicDevicePath := strings.TrimPrefix(assignedUser.URL, origin) + "/devices/" + extra.ID + "/nodes/" + nodes[1].id + ".conf"
+	call(http.MethodGet, publicDevicePath, "", nil, 200, nil)
+	call(http.MethodGet, strings.TrimPrefix(assignedUser.URL, origin)+"/devices/"+store.NewToken()+"/nodes/"+nodes[1].id+".conf", "", nil, 400, nil)
+	call(http.MethodDelete, extraPath, deviceService.Token, nil, 204, nil)
+	call(http.MethodGet, deviceProfilePath, admin, nil, 404, nil)
+	call(http.MethodGet, publicDevicePath, "", nil, 404, nil)
+	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
+		t.Fatal("deleting a device changed another device's keys")
+	}
+	// Removing the last device preserves server assignments without resurrecting keys.
+	call(http.MethodDelete, telegramUserPath+"/devices/"+originalDevice, admin, nil, 204, nil)
+	call(http.MethodGet, profilePath, admin, nil, 404, nil)
+	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
+	if len(assignedAccess.NodeIDs) != 1 {
+		t.Fatal("last device removal erased subscription servers")
+	}
+	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": plan.ID}, 200, nil)
+	call(http.MethodGet, telegramUserPath+"/devices", admin, nil, 200, &devices)
+	if len(devices) != 0 {
+		t.Fatal("subscription edit resurrected a deleted device")
+	}
+	call(http.MethodPut, telegramUserPath+"/device-limit", admin, map[string]any{"device_limit": nil}, 204, nil)
+	var replacement store.Device
+	call(http.MethodPost, telegramUserPath+"/devices", admin, map[string]any{"name": "New phone"}, 201, &replacement)
+	// Following existing assertions should compare the replacement's stable credentials.
+	after = call(http.MethodGet, profilePath, admin, nil, 200, nil)
+
 	call(http.MethodPut, "/api/admin/subscription-plans/"+plan.ID, admin, map[string]any{"name": "Renamed", "node_ids": []string{nodes[1].id}}, 200, nil)
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
 		t.Fatal("renaming a plan changed an existing VPN key")

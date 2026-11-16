@@ -63,7 +63,7 @@ func (s Store) RevokeSubscription(ctx context.Context, id, token string) error {
 		if err := bumpNodes(ctx, tx, "SELECT node_id FROM peers WHERE subscription_id=$1", id); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, "SELECT node_id::text FROM peers WHERE subscription_id=$1", id)
+		rows, err := tx.Query(ctx, "SELECT public_key FROM peers WHERE subscription_id=$1 ORDER BY node_id,device_id", id)
 		if err != nil {
 			return err
 		}
@@ -71,13 +71,13 @@ func (s Store) RevokeSubscription(ctx context.Context, id, token string) error {
 		if err != nil {
 			return err
 		}
-		for _, nodeID := range nodes {
+		for _, oldPublic := range nodes {
 			private, public, err := vpn.KeyPair()
 			if err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `UPDATE peers SET private_key=$3,public_key=$4,current_handshake_at=NULL,received_counter=0,sent_counter=0
-				WHERE subscription_id=$1 AND node_id=$2`, id, nodeID, s.Vault.Seal(private), public); err != nil {
+				WHERE subscription_id=$1 AND public_key=$2`, id, oldPublic, s.Vault.Seal(private), public); err != nil {
 				return err
 			}
 		}
@@ -127,10 +127,13 @@ func (s Store) FinishNodeRemoval(ctx context.Context, id, failure string) error 
 		}
 		if _, err := tx.Exec(ctx, `WITH removed AS (DELETE FROM peers WHERE node_id=$1 RETURNING subscription_id,last_handshake_at)
 				UPDATE subscriptions s SET removed_peer_last_handshake_at=greatest(s.removed_peer_last_handshake_at,r.last_handshake_at)
-				FROM removed r WHERE s.id=r.subscription_id`, id); err != nil {
+				FROM (SELECT subscription_id,max(last_handshake_at) AS last_handshake_at FROM removed GROUP BY subscription_id) r WHERE s.id=r.subscription_id`, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM subscription_plan_nodes WHERE node_id=$1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM subscription_nodes WHERE node_id=$1`, id); err != nil {
 			return err
 		}
 		return recordDeletion(ctx, tx, "node", id, name)

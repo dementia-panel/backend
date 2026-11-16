@@ -14,6 +14,7 @@ import (
 	"dementia/backend/internal/api/httpx"
 	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 type download struct {
@@ -23,7 +24,13 @@ type download struct {
 	KeyURL     string `json:"key_url,omitempty"`
 }
 
+type publicDevice struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type page struct {
+	Devices   []publicDevice              `json:"devices"`
 	Name      string                      `json:"name"`
 	ExpiresAt *time.Time                  `json:"expires_at"`
 	Locations []download                  `json:"locations"`
@@ -36,10 +43,22 @@ func (h *Handler) publicPage(r *http.Request) (page, error) {
 	if err != nil {
 		return page{}, err
 	}
-	result := page{Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
+	var devices []publicDevice
+	rows, err := h.store.DB.Query(r.Context(), `SELECT d.id::text,d.name FROM user_devices d JOIN subscriptions s ON s.user_id=d.user_id WHERE s.id=$1 ORDER BY d.created_at,d.id`, sub.ID)
+	if err != nil {
+		return page{}, err
+	}
+	devices, err = pgx.AppendRows([]publicDevice{}, rows, pgx.RowToStructByPos[publicDevice])
+	if err != nil {
+		return page{}, err
+	}
+	result := page{Devices: devices, Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
 	for _, l := range locations {
 		d := download{Location: l}
-		if l.Available {
+		if len(devices) == 0 {
+			d.Available = false
+		}
+		if d.Available {
 			nodeURL := h.publicURL + "/s/" + token + "/nodes/" + l.ID
 			d.URL = nodeURL + ".conf"
 			d.AmneziaURL = nodeURL + ".vpn"
@@ -128,7 +147,12 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		return
 	}
-	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id)
+	deviceID := chi.URLParam(r, "deviceID")
+	if deviceID != "" && !httpx.ValidID(deviceID) {
+		httpx.Failure(w, 400, "invalid device ID")
+		return
+	}
+	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id, deviceID)
 	if err != nil {
 		httpx.HandleError(w, err)
 		return
@@ -152,7 +176,12 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 	if id == "" {
 		return
 	}
-	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id)
+	deviceID := chi.URLParam(r, "deviceID")
+	if deviceID != "" && !httpx.ValidID(deviceID) {
+		httpx.Failure(w, 400, "invalid device ID")
+		return
+	}
+	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id, deviceID)
 	if err != nil {
 		httpx.HandleError(w, err)
 		return

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"dementia/backend/internal/store"
@@ -42,7 +43,7 @@ func HandleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		Failure(w, 404, "resource not found")
-	case errors.Is(err, store.ErrNodeUnavailable), errors.Is(err, store.ErrAddressPoolFull):
+	case errors.Is(err, store.ErrDeviceLimit), errors.Is(err, store.ErrAmbiguousUser), errors.Is(err, store.ErrNodeUnavailable), errors.Is(err, store.ErrAddressPoolFull):
 		Failure(w, 409, err.Error())
 	case errors.Is(err, context.DeadlineExceeded),
 		errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014" || pgErr.Code == "40P01" || pgErr.Code == "40001"):
@@ -90,3 +91,28 @@ func IDParam(w http.ResponseWriter, r *http.Request) string {
 }
 
 func ValidID(id string) bool { return uuidPattern.MatchString(id) }
+
+// UserIDParam accepts a UUID or a positive Telegram ID in user routes.
+func UserIDParam(w http.ResponseWriter, r *http.Request, repo store.Store) string {
+	return UserReference(w, r, repo, chi.URLParam(r, "id"))
+}
+
+func UserReference(w http.ResponseWriter, r *http.Request, repo store.Store, value string) string {
+	var id string
+	var err error
+	if ValidID(value) {
+		err = repo.DB.QueryRow(r.Context(), `SELECT id::text FROM users WHERE id=$1`, value).Scan(&id)
+	} else {
+		telegram, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || telegram <= 0 {
+			Failure(w, http.StatusBadRequest, "user must be identified by UUID or positive telegram_id")
+			return ""
+		}
+		id, err = repo.UserIDByTelegram(r.Context(), telegram)
+	}
+	if err != nil {
+		HandleError(w, err)
+		return ""
+	}
+	return id
+}

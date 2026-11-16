@@ -19,4 +19,7 @@ func Register(r chi.Router, repo store.Store, publicURL string) {
 	r.Get("/s/{token}/nodes/{id}.conf", h.profile)
 	r.Get("/s/{token}/nodes/{id}.vpn", h.amneziaProfile)
 	r.Get("/s/{token}/nodes/{id}.key", h.amneziaKey)
+	r.Get("/s/{token}/devices/{deviceID}/nodes/{id}.conf", h.profile)
+	r.Get("/s/{token}/devices/{deviceID}/nodes/{id}.vpn", h.amneziaProfile)
+	r.Get("/s/{token}/devices/{deviceID}/nodes/{id}.key", h.amneziaKey)
 }

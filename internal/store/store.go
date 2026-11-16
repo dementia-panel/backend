@@ -170,6 +170,9 @@ func (s Store) CreateSubscription(ctx context.Context, userID, name, token strin
 			userID, name, HashToken(token), expires, s.Vault.Seal(token)).Scan(&sub.ID, &sub.UserID, &sub.Name, &sub.Enabled, &sub.ExpiresAt); err != nil {
 			return err
 		}
+		if err := s.ensureInitialDevice(ctx, tx, userID); err != nil {
+			return err
+		}
 		for _, nodeID := range nodeIDs {
 			tag, err := tx.Exec(ctx, `UPDATE nodes SET revision=revision+1 WHERE id=$1 AND status='ready' AND enabled`, nodeID)
 			if err != nil {
@@ -189,6 +192,30 @@ func (s Store) CreateSubscription(ctx context.Context, userID, name, token strin
 }
 
 func (s Store) insertPeer(ctx context.Context, tx pgx.Tx, subscriptionID, nodeID string) error {
+	var userID string
+	if err := tx.QueryRow(ctx, `SELECT user_id::text FROM subscriptions WHERE id=$1`, subscriptionID).Scan(&userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO subscription_nodes(subscription_id,node_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, subscriptionID, nodeID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT id::text FROM user_devices WHERE user_id=$1 ORDER BY created_at,id`, userID)
+	if err != nil {
+		return err
+	}
+	devices, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, id := range devices {
+		if err := s.insertDevicePeer(ctx, tx, subscriptionID, nodeID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s Store) insertDevicePeer(ctx context.Context, tx pgx.Tx, subscriptionID, nodeID, deviceID string) error {
 	var address int
 	err := tx.QueryRow(ctx, `SELECT min(candidate) FROM (
 			SELECT 2 AS candidate
@@ -206,8 +233,8 @@ func (s Store) insertPeer(ctx context.Context, tx pgx.Tx, subscriptionID, nodeID
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO peers(subscription_id,node_id,address,private_key,public_key)
-		VALUES($1,$2,$3,$4,$5)`, subscriptionID, nodeID, address, s.Vault.Seal(private), public); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO peers(subscription_id,node_id,address,private_key,public_key,device_id)
+		VALUES($1,$2,$3,$4,$5,$6)`, subscriptionID, nodeID, address, s.Vault.Seal(private), public, deviceID); err != nil {
 		return err
 	}
 	return nil
@@ -225,7 +252,7 @@ func (s Store) replaceSubscriptionNodes(ctx context.Context, tx pgx.Tx, subscrip
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT n.id::text,n.enabled AND n.status='ready',p.node_id IS NOT NULL
-		FROM nodes n LEFT JOIN peers p ON p.node_id=n.id AND p.subscription_id=$1
+		FROM nodes n LEFT JOIN subscription_nodes p ON p.node_id=n.id AND p.subscription_id=$1
 		WHERE n.id=ANY($2::text[]::uuid[]) OR p.node_id IS NOT NULL ORDER BY n.id FOR UPDATE OF n`, id, nodeIDs)
 	if err != nil {
 		return err
@@ -267,8 +294,13 @@ func (s Store) replaceSubscriptionNodes(ctx context.Context, tx pgx.Tx, subscrip
 		} else if _, err := tx.Exec(ctx, `WITH removed AS (
 			DELETE FROM peers WHERE subscription_id=$1 AND node_id=$2 RETURNING last_handshake_at
 		) UPDATE subscriptions SET removed_peer_last_handshake_at=greatest(
-			removed_peer_last_handshake_at,(SELECT last_handshake_at FROM removed)) WHERE id=$1`, id, item.id); err != nil {
+			removed_peer_last_handshake_at,(SELECT max(last_handshake_at) FROM removed)) WHERE id=$1`, id, item.id); err != nil {
 			return err
+		}
+		if !keep {
+			if _, err := tx.Exec(ctx, `DELETE FROM subscription_nodes WHERE subscription_id=$1 AND node_id=$2`, id, item.id); err != nil {
+				return err
+			}
 		}
 	}
 	if len(wanted) != 0 {
@@ -285,7 +317,7 @@ func (s Store) replaceSubscriptionNodes(ctx context.Context, tx pgx.Tx, subscrip
 
 func (s Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
 	rows, err := s.DB.Query(ctx, `SELECT s.id::text,s.user_id::text,s.name,s.enabled,s.expires_at,s.traffic_limit_bytes,s.traffic_used_bytes,s.traffic_reset_days,s.traffic_reset_at,s.plan_id::text,
-		ARRAY(SELECT p.node_id::text FROM peers p WHERE p.subscription_id=s.id ORDER BY p.node_id)
+		ARRAY(SELECT p.node_id::text FROM subscription_nodes p WHERE p.subscription_id=s.id ORDER BY p.node_id)
 		FROM subscriptions s ORDER BY s.created_at,s.id`)
 	if err != nil {
 		return nil, err
@@ -350,7 +382,7 @@ func (s Store) PublicSubscription(ctx context.Context, token string) (Subscripti
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT n.id::text,n.name,coalesce(n.enabled AND n.status='ready' AND n.applied_revision=n.revision AND n.last_seen_at>now()-interval '1 minute',false)
-			FROM peers p JOIN nodes n ON n.id=p.node_id WHERE p.subscription_id=$1 ORDER BY n.name,n.id`, sub.ID)
+			FROM subscription_nodes p JOIN nodes n ON n.id=p.node_id WHERE p.subscription_id=$1 ORDER BY n.name,n.id`, sub.ID)
 		if err != nil {
 			return err
 		}
@@ -374,17 +406,17 @@ const clientProfilesQuery = `SELECT n.name,coalesce(n.endpoint_host,host(n.ip)),
 	WHERE s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)
 	    AND n.enabled AND n.status='ready' AND n.retired_at IS NULL AND `
 
-func (s Store) Profile(ctx context.Context, token, nodeID string) (vpn.ClientProfile, error) {
-	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND s.token_hash=$2 AND `+syncedProfile, nodeID, HashToken(token)))
+func (s Store) Profile(ctx context.Context, token, nodeID string, deviceIDs ...string) (vpn.ClientProfile, error) {
+	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND s.token_hash=$2 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id AND (nullif($3,'')::uuid IS NULL OR d.id=nullif($3,'')::uuid) ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile, nodeID, HashToken(token), firstDeviceID(deviceIDs)))
 }
 
-func (s Store) ProfileForSubscription(ctx context.Context, subscriptionID, nodeID string) (vpn.ClientProfile, error) {
+func (s Store) ProfileForSubscription(ctx context.Context, subscriptionID, nodeID string, deviceIDs ...string) (vpn.ClientProfile, error) {
 	// Administrators can export the issued profile while it is syncing to the node.
-	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND s.id=$2`, nodeID, subscriptionID))
+	return s.clientProfile(s.DB.QueryRow(ctx, clientProfilesQuery+`n.id=$1 AND s.id=$2 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id AND (nullif($3,'')::uuid IS NULL OR d.id=nullif($3,'')::uuid) ORDER BY d.created_at,d.id LIMIT 1)`, nodeID, subscriptionID, firstDeviceID(deviceIDs)))
 }
 
 func (s Store) PublicProfiles(ctx context.Context, token string) ([]vpn.ClientProfile, error) {
-	rows, err := s.DB.Query(ctx, clientProfilesQuery+`s.token_hash=$1 AND `+syncedProfile+` ORDER BY n.name,n.id`, HashToken(token))
+	rows, err := s.DB.Query(ctx, clientProfilesQuery+`s.token_hash=$1 AND p.device_id=(SELECT d.id FROM user_devices d WHERE d.user_id=u.id ORDER BY d.created_at,d.id LIMIT 1) AND `+syncedProfile+` ORDER BY n.name,n.id`, HashToken(token))
 	if err != nil {
 		return nil, err
 	}
@@ -534,4 +566,11 @@ func (s Store) SubscriptionToken(ctx context.Context, id string) (string, error)
 		return "", errors.New("subscription token integrity check failed")
 	}
 	return token, nil
+}
+
+func firstDeviceID(ids []string) string {
+	if len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
 }

@@ -24,7 +24,12 @@ func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, http.StatusBadRequest, "invalid node ID")
 		return
 	}
-	profile, err := h.store.ProfileForSubscription(r.Context(), id, nodeID)
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID != "" && !httpx.ValidID(deviceID) {
+		httpx.Failure(w, 400, "invalid device ID")
+		return
+	}
+	profile, err := h.store.ProfileForSubscription(r.Context(), id, nodeID, deviceID)
 	if err != nil {
 		httpx.HandleError(w, err)
 		return
@@ -299,7 +304,7 @@ func (h *Handler) deletePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
-	id := httpx.IDParam(w, r)
+	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
@@ -338,7 +343,7 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) assignedPlan(w http.ResponseWriter, r *http.Request) {
-	id := httpx.IDParam(w, r)
+	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}

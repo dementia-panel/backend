@@ -8,6 +8,7 @@ import (
 	"dementia/backend/internal/api/agent"
 	"dementia/backend/internal/api/apitokens"
 	"dementia/backend/internal/api/auth"
+	"dementia/backend/internal/api/devices"
 	"dementia/backend/internal/api/health"
 	"dementia/backend/internal/api/nodes"
 	"dementia/backend/internal/api/publicsubscription"
@@ -59,6 +60,8 @@ func (a *API) Handler() http.Handler {
 			r.Use(apitokens.AllowBearer(a.Store, admin.RequireSession))
 			nodes.Register(r, a.Store, a.PublicURL, a.Context, &a.Workers)
 			users.Register(r, a.Store, a.PublicURL)
+			devices.Register(r, a.Store)
+			settings.RegisterDeviceSettings(r, a.Store)
 			subscriptions.Register(r, a.Store, a.PublicURL)
 			traffic.Register(r, a.Store)
 		})

@@ -17,17 +17,20 @@ type User struct {
 	LastConnectedAt    *time.Time `json:"last_connected_at"`
 	SubscriptionPlanID *string    `json:"subscription_plan_id"`
 	Online             bool       `json:"online"`
+	DeviceLimit        *int       `json:"device_limit"`
+	DeviceCount        int        `json:"device_count"`
+	OnlineDeviceCount  int        `json:"online_device_count"`
 }
 
 func scanUser(row pgx.Row) (User, error) {
 	var user User
-	err := row.Scan(&user.ID, &user.Username, &user.TelegramID, &user.Enabled, &user.CreatedAt, &user.UpdatedAt, &user.LastConnectedAt, &user.Online, &user.SubscriptionPlanID)
+	err := row.Scan(&user.ID, &user.Username, &user.TelegramID, &user.Enabled, &user.CreatedAt, &user.UpdatedAt, &user.LastConnectedAt, &user.Online, &user.SubscriptionPlanID, &user.DeviceLimit, &user.DeviceCount, &user.OnlineDeviceCount)
 	return user, err
 }
 
 func (s Store) CreateUser(ctx context.Context, username string, telegramID *int64) (User, error) {
-	return scanUser(s.DB.QueryRow(ctx, `INSERT INTO users(username,telegram_id) VALUES($1,$2)
-		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text`, username, telegramID))
+	return scanUser(s.DB.QueryRow(ctx, `INSERT INTO users(username,telegram_id,device_limit) VALUES($1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
+		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID))
 }
 
 func (s Store) CreateUserWithSubscription(ctx context.Context, username string, telegramID *int64, planID string, token string) (User, string, error) {
@@ -35,8 +38,8 @@ func (s Store) CreateUserWithSubscription(ctx context.Context, username string, 
 	var accessID string
 	err := pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
 		var err error
-		user, err = scanUser(tx.QueryRow(ctx, `INSERT INTO users(username,telegram_id) VALUES($1,$2)
-			RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text`, username, telegramID))
+		user, err = scanUser(tx.QueryRow(ctx, `INSERT INTO users(username,telegram_id,device_limit) VALUES($1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
+			RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID))
 		if err != nil {
 			return err
 		}
@@ -44,20 +47,26 @@ func (s Store) CreateUserWithSubscription(ctx context.Context, username string, 
 			return err
 		}
 		user.SubscriptionPlanID = &planID
+		user.DeviceCount = 1
 		return nil
 	})
 	return user, accessID, err
 }
 
 const selectUsers = `SELECT u.id::text,u.username,u.telegram_id,u.enabled,u.created_at,u.updated_at,
-	activity.last_connected_at,coalesce(activity.online,false),u.subscription_plan_id::text
+	activity.last_connected_at,coalesce(activity.online,false),u.subscription_plan_id::text,u.device_limit,
+ (SELECT count(*) FROM user_devices d WHERE d.user_id=u.id),coalesce(activity.online_devices,0)
 	FROM users u
 	CROSS JOIN LATERAL (
 		SELECT greatest(max(p.last_handshake_at),max(s.removed_peer_last_handshake_at)) AS last_connected_at,
 		    bool_or(u.enabled AND s.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) AND n.enabled AND n.status='ready'
 		        AND n.applied_revision=n.revision
 		        AND n.handshakes_reported_at>now()-interval '1 minute'
-		        AND p.current_handshake_at>now()-interval '3 minutes') AS online
+		        AND p.current_handshake_at>now()-interval '3 minutes') AS online,
+ count(DISTINCT p.device_id) FILTER (WHERE u.enabled AND s.enabled AND (s.expires_at IS NULL OR s.expires_at>now())
+ AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes) AND n.enabled AND n.status='ready'
+ AND n.applied_revision=n.revision AND n.handshakes_reported_at>now()-interval '1 minute'
+ AND p.current_handshake_at>now()-interval '3 minutes') AS online_devices
 		FROM subscriptions s LEFT JOIN peers p ON p.subscription_id=s.id LEFT JOIN nodes n ON n.id=p.node_id
 		WHERE s.user_id=u.id
 	) activity`

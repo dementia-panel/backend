@@ -10,7 +10,20 @@ import (
 func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	nodeID, userID := query.Get("node_id"), query.Get("user_id")
-	if (nodeID != "" && !httpx.ValidID(nodeID)) || (userID != "" && !httpx.ValidID(userID)) {
+	if telegram := query.Get("telegram_id"); telegram != "" {
+		if userID != "" {
+			httpx.Failure(w, 400, "provide user_id or telegram_id, not both")
+			return
+		}
+		userID = telegram
+	}
+	if userID != "" {
+		userID = httpx.UserReference(w, r, h.store, userID)
+		if userID == "" {
+			return
+		}
+	}
+	if nodeID != "" && !httpx.ValidID(nodeID) {
 		httpx.Failure(w, http.StatusBadRequest, "invalid node_id or user_id")
 		return
 	}
