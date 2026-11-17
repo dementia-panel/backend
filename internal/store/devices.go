@@ -232,3 +232,20 @@ func (s Store) PublicDevices(ctx context.Context, subscriptionID, token string) 
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[Device])
 }
+
+type DeviceServer struct {
+	DeviceID        string     `json:"-"`
+	NodeID          string     `json:"node_id"`
+	LastConnectedAt *time.Time `json:"last_connected_at"`
+}
+
+func (s Store) PublicDeviceServers(ctx context.Context, subscriptionID, token string) ([]DeviceServer, error) {
+	rows, err := s.DB.Query(ctx, `SELECT p.device_id::text,p.node_id::text,p.last_handshake_at
+ FROM peers p JOIN subscriptions s ON s.id=p.subscription_id JOIN user_devices d ON d.id=p.device_id AND d.user_id=s.user_id
+ WHERE s.id=$2 AND (s.token_hash=$1 OR EXISTS(SELECT 1 FROM device_subscription_links l WHERE l.subscription_id=s.id AND l.device_id=d.id AND l.token_hash=$1 AND l.subscription_token_hash=s.token_hash))
+ ORDER BY p.device_id,p.node_id`, HashToken(token), subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[DeviceServer])
+}

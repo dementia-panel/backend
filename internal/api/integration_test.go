@@ -919,9 +919,26 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal("device link returned a different device's credentials")
 	}
 	call(http.MethodGet, deviceBase+"/devices/"+originalDevice+"/nodes/"+nodes[1].id+".conf", "", nil, 404, nil)
+	var deletedPublic string
+	if err := pool.QueryRow(ctx, "SELECT public_key FROM peers WHERE device_id=$1 AND node_id=$2", extra.ID, nodes[1].id).Scan(&deletedPublic); err != nil {
+		t.Fatal(err)
+	}
 	call(http.MethodDelete, extraPath, deviceService.Token, nil, 204, nil)
 	call(http.MethodGet, deviceBase+"/manifest", "", nil, 404, nil)
 	call(http.MethodGet, configURL, "", nil, 404, nil)
+
+	call(http.MethodGet, deviceAgentPath+"/state", nodes[1].token, nil, 200, &deviceState)
+	if len(deviceState.Peers) != 1 {
+		t.Fatal("deleted device remained in node state")
+	}
+	for _, peer := range deviceState.Peers {
+		if peer.PublicKey == deletedPublic {
+			t.Fatal("revoked public key is still active")
+		}
+		if _, found := deviceHandshakes[peer.PublicKey]; !found {
+			t.Fatal("remaining device key unexpectedly changed")
+		}
+	}
 	call(http.MethodGet, deviceProfilePath, admin, nil, 404, nil)
 	call(http.MethodGet, publicDevicePath, "", nil, 404, nil)
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
@@ -1043,4 +1060,75 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		}
 	}
 
+	{
+		// Usage and deletion are scoped to each device/server key independently.
+		var fresh []fixture
+		for _, ip := range []string{"192.0.2.50", "192.0.2.51"} {
+			tok := store.NewToken()
+			n, e := repo.ReserveNode(ctx, ip, ip, tok, 22, 51820)
+			if e != nil {
+				t.Fatal(e)
+			}
+			header, public, e := vpn.KeyPair()
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = repo.FinishInstall(ctx, n.ID, tok, public, header, ""); e != nil {
+				t.Fatal(e)
+			}
+			fresh = append(fresh, fixture{n.ID, tok, public, header})
+		}
+		u, e := repo.CreateUser(ctx, "per-server-test", nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		tok := store.NewToken()
+		sub, e := repo.CreateSubscription(ctx, u.ID, "Two servers", tok, time.Now().Add(time.Hour), []string{fresh[0].id, fresh[1].id})
+		if e != nil {
+			t.Fatal(e)
+		}
+		ds, e := repo.Devices(ctx, u.ID)
+		if e != nil || len(ds) != 1 {
+			t.Fatal(e)
+		}
+		tok, e = repo.DeviceSubscriptionToken(ctx, u.ID, ds[0].ID, sub.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		for i, n := range fresh {
+			var state store.State
+			call(http.MethodGet, "/api/agent/nodes/"+n.id+"/state", n.token, nil, 200, &state)
+			if len(state.Peers) != 1 {
+				t.Fatal("missing device peer")
+			}
+			hs := map[string]int64{}
+			if i == 0 {
+				hs[state.Peers[0].PublicKey] = time.Now().Unix()
+			}
+			call(http.MethodPost, "/api/agent/nodes/"+n.id+"/ack", n.token, map[string]any{"revision": state.Revision, "handshakes": hs}, 200, nil)
+		}
+		var manifest struct {
+			Devices []struct{ Servers []store.DeviceServer }
+		}
+		call(http.MethodGet, "/s/"+tok+"/manifest", "", nil, 200, &manifest)
+		if len(manifest.Devices) != 1 || len(manifest.Devices[0].Servers) != 2 {
+			t.Fatal("missing per-server status")
+		}
+		for _, s := range manifest.Devices[0].Servers {
+			if (s.LastConnectedAt != nil) != (s.NodeID == fresh[0].id) {
+				t.Fatal("using one server marked another as used")
+			}
+		}
+		call(http.MethodGet, "/s/"+tok+"/nodes/"+fresh[1].id+".conf", "", nil, 200, nil)
+		call(http.MethodDelete, "/api/admin/users/"+u.ID+"/devices/"+ds[0].ID, admin, nil, 204, nil)
+		call(http.MethodGet, "/s/"+tok+"/manifest", "", nil, 404, nil)
+		for _, n := range fresh {
+			var state store.State
+			call(http.MethodGet, "/api/agent/nodes/"+n.id+"/state", n.token, nil, 200, &state)
+			if len(state.Peers) != 0 {
+				t.Fatal("deleted device key remained on a server")
+			}
+		}
+
+	}
 }

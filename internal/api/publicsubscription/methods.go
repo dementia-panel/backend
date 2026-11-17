@@ -24,10 +24,11 @@ type download struct {
 }
 
 type publicDevice struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Online          bool       `json:"online"`
-	LastConnectedAt *time.Time `json:"last_connected_at"`
+	ID              string               `json:"id"`
+	Name            string               `json:"name"`
+	Online          bool                 `json:"online"`
+	LastConnectedAt *time.Time           `json:"last_connected_at"`
+	Servers         []store.DeviceServer `json:"servers"`
 }
 
 type page struct {
@@ -48,9 +49,17 @@ func (h *Handler) publicPage(r *http.Request) (page, error) {
 	if err != nil {
 		return page{}, err
 	}
+	servers, err := h.store.PublicDeviceServers(r.Context(), sub.ID, token)
+	if err != nil {
+		return page{}, err
+	}
+	byDevice := make(map[string][]store.DeviceServer)
+	for _, server := range servers {
+		byDevice[server.DeviceID] = append(byDevice[server.DeviceID], server)
+	}
 	devices := make([]publicDevice, 0, len(records))
 	for _, d := range records {
-		devices = append(devices, publicDevice{ID: d.ID, Name: d.Name, Online: d.Online, LastConnectedAt: d.LastConnectedAt})
+		devices = append(devices, publicDevice{ID: d.ID, Name: d.Name, Online: d.Online, LastConnectedAt: d.LastConnectedAt, Servers: byDevice[d.ID]})
 	}
 	result := page{Devices: devices, Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
 	for _, l := range locations {
