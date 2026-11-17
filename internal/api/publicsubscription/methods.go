@@ -3,6 +3,11 @@ package publicsubscription
 import (
 	"archive/zip"
 	"bytes"
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
+	"log/slog"
+
 	_ "embed"
 	"html/template"
 	"mime"
@@ -11,9 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type download struct {
@@ -22,7 +26,6 @@ type download struct {
 	AmneziaURL string `json:"amnezia_url,omitempty"`
 	KeyURL     string `json:"key_url,omitempty"`
 }
-
 type publicDevice struct {
 	ID              string               `json:"id"`
 	Name            string               `json:"name"`
@@ -30,7 +33,6 @@ type publicDevice struct {
 	LastConnectedAt *time.Time           `json:"last_connected_at"`
 	Servers         []store.DeviceServer `json:"servers"`
 }
-
 type page struct {
 	DeviceOptions []store.DeviceOption        `json:"device_options"`
 	Devices       []publicDevice              `json:"devices"`
@@ -41,16 +43,20 @@ type page struct {
 }
 
 func (h *Handler) publicPage(r *http.Request) (page, error) {
+	const op = "internal/api/publicsubscription/publicPage"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	token := chi.URLParam(r, "token")
-	sub, locations, err := h.store.PublicSubscription(r.Context(), token)
+	sub, locations, err := h.store.PublicSubscription(r.Context(), requestID, token)
 	if err != nil {
 		return page{}, err
 	}
-	records, err := h.store.PublicDevices(r.Context(), sub.ID, token)
+	records, err := h.store.PublicDevices(r.Context(), requestID, sub.ID, token)
 	if err != nil {
 		return page{}, err
 	}
-	servers, err := h.store.PublicDeviceServers(r.Context(), sub.ID, token)
+	servers, err := h.store.PublicDeviceServers(r.Context(), requestID, sub.ID, token)
 	if err != nil {
 		return page{}, err
 	}
@@ -62,7 +68,7 @@ func (h *Handler) publicPage(r *http.Request) (page, error) {
 	for _, d := range records {
 		devices = append(devices, publicDevice{ID: d.ID, Name: d.Name, Online: d.Online, LastConnectedAt: d.LastConnectedAt, Servers: byDevice[d.ID]})
 	}
-	options, err := h.store.DeviceOptions(r.Context(), sub.UserID)
+	options, err := h.store.DeviceOptions(r.Context(), requestID, sub.UserID)
 	if err != nil {
 		return page{}, err
 	}
@@ -114,48 +120,56 @@ func copyKeyScript(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	_, _ = w.Write([]byte(copyKeyJS))
 }
-
 func publicHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 }
-
 func (h *Handler) subscriptionPage(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/subscriptionPage"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	data, err := h.publicPage(r)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	var output bytes.Buffer
 	if err := subscriptionTemplate.Execute(&output, data); err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 	_, _ = w.Write(output.Bytes())
 }
-
 func (h *Handler) manifest(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/manifest"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	data, err := h.publicPage(r)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
-	branding, err := h.store.SubscriptionBranding(r.Context())
+	branding, err := h.store.SubscriptionBranding(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	data.Branding = &branding
 	httpx.Respond(w, 200, data)
 }
-
 func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/profile"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	id := httpx.IDParam(w, r)
 	if id == "" {
@@ -166,25 +180,34 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "invalid device ID")
 		return
 	}
-	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id, deviceID)
+	profile, err := h.store.Profile(r.Context(), requestID, chi.URLParam(r, "token"), id, deviceID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="dementia-`+id+`.conf"`)
 	_, _ = w.Write([]byte(profile.Conf()))
 }
-
 func (h *Handler) amneziaProfile(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/amneziaProfile"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	h.writeAmneziaKey(w, r, true)
 }
-
 func (h *Handler) amneziaKey(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/amneziaKey"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	h.writeAmneziaKey(w, r, false)
 }
-
 func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attachment bool) {
+	const op = "internal/api/publicsubscription/writeAmneziaKey"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	id := httpx.IDParam(w, r)
 	if id == "" {
@@ -195,14 +218,14 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 		httpx.Failure(w, 400, "invalid device ID")
 		return
 	}
-	profile, err := h.store.Profile(r.Context(), chi.URLParam(r, "token"), id, deviceID)
+	profile, err := h.store.Profile(r.Context(), requestID, chi.URLParam(r, "token"), id, deviceID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	link, err := profile.AmneziaLink()
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	if !attachment {
@@ -220,24 +243,26 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".vpn"}))
 	_, _ = w.Write([]byte(link))
 }
-
 func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/configArchive"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	format := chi.URLParam(r, "format")
 	if format != "vpn" && format != "conf" {
 		httpx.Failure(w, http.StatusNotFound, "unknown config format")
 		return
 	}
-	profiles, err := h.store.PublicProfiles(r.Context(), chi.URLParam(r, "token"))
+	profiles, err := h.store.PublicProfiles(r.Context(), requestID, chi.URLParam(r, "token"))
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	if len(profiles) == 0 {
 		httpx.Failure(w, http.StatusNotFound, "no available profiles")
 		return
 	}
-
 	var data bytes.Buffer
 	archive := zip.NewWriter(&data)
 	for i, profile := range profiles {
@@ -245,7 +270,7 @@ func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 		if format == "vpn" {
 			content, err = profile.AmneziaLink()
 			if err != nil {
-				httpx.HandleError(w, err)
+				httpx.HandleError(w, r, err)
 				return
 			}
 		}
@@ -254,12 +279,12 @@ func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 			_, err = file.Write([]byte(content))
 		}
 		if err != nil {
-			httpx.HandleError(w, err)
+			httpx.HandleError(w, r, err)
 			return
 		}
 	}
 	if err := archive.Close(); err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
@@ -267,9 +292,7 @@ func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(data.Len()))
 	_, _ = data.WriteTo(w)
 }
-
 func archiveFilename(name string, index int, format string) string {
-	// Keep tunnel names within the 15-character limit on AmneziaWG Android.
 	prefix := strconv.Itoa(index) + "-"
 	safe := strings.Map(func(r rune) rune {
 		switch {
@@ -286,22 +309,25 @@ func archiveFilename(name string, index int, format string) string {
 	safe = strings.TrimRight(safe[:min(len(safe), 15-len(prefix))], "-")
 	return prefix + safe + "." + format
 }
-
 func (h *Handler) deviceLink(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/publicsubscription/deviceLink"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	publicHeaders(w)
 	id := chi.URLParam(r, "deviceID")
 	if !httpx.ValidID(id) {
 		httpx.Failure(w, 400, "invalid device ID")
 		return
 	}
-	sub, _, err := h.store.PublicSubscription(r.Context(), chi.URLParam(r, "token"))
+	sub, _, err := h.store.PublicSubscription(r.Context(), requestID, chi.URLParam(r, "token"))
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
-	token, err := h.store.DeviceSubscriptionToken(r.Context(), sub.UserID, id, sub.ID)
+	token, err := h.store.DeviceSubscriptionToken(r.Context(), requestID, sub.UserID, id, sub.ID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, map[string]string{"url": h.publicURL + "/s/" + token})

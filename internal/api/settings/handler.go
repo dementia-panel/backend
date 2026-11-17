@@ -3,6 +3,7 @@ package settings
 import (
 	"dementia/backend/internal/integration"
 	"dementia/backend/internal/store"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -14,10 +15,11 @@ type Handler struct {
 func Register(r chi.Router, repo store.Store, status func() integration.Snapshot) {
 	h := &Handler{store: repo, status: status}
 	r.Get("/settings/integrations", h.integrations)
+	r.Get("/settings/telegram", h.telegramSettings)
+	r.Put("/settings/telegram", h.saveTelegramSettings)
 	r.Get("/settings/subscription-branding", h.branding)
 	r.Put("/settings/subscription-branding", h.updateBranding)
 }
-
 func RegisterDeviceSettings(r chi.Router, repo store.Store) {
 	h := &Handler{store: repo}
 	r.Get("/settings/devices", h.deviceSettings)

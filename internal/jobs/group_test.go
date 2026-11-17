@@ -12,14 +12,18 @@ func TestConcurrentStartAndClose(t *testing.T) {
 	var accepted, completed atomic.Int64
 	for range 100 {
 		callers.Go(func() {
-			if group.Start("test", func() { completed.Add(1) }) {
+			if group.Start("test", func() {
+				completed.Add(1)
+			}) {
 				accepted.Add(1)
 			}
 		})
 	}
 	callers.Go(group.CloseAndWait)
 	callers.Wait()
-	if group.Start("late", func() { t.Error("job ran after shutdown") }) {
+	if group.Start("late", func() {
+		t.Error("job ran after shutdown")
+	}) {
 		t.Fatal("job accepted after shutdown")
 	}
 	if accepted.Load() != completed.Load() {

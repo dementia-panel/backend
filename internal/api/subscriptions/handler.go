@@ -2,6 +2,7 @@ package subscriptions
 
 import (
 	"dementia/backend/internal/store"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -14,7 +15,6 @@ func RegisterProfileExport(r chi.Router, repo store.Store) {
 	h := &Handler{store: repo}
 	r.Get("/subscriptions/{id}/nodes/{nodeID}/profile", h.exportProfile)
 }
-
 func Register(r chi.Router, repo store.Store, publicURL string) {
 	h := &Handler{store: repo, publicURL: publicURL}
 	r.Get("/subscription-plans", h.plans)

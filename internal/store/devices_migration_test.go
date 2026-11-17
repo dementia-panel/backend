@@ -2,23 +2,21 @@ package store
 
 import (
 	"context"
+	"dementia/backend/internal/testdb"
+	"dementia/backend/internal/vpn"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"dementia/backend/internal/vpn"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is unset")
-	}
+	dsn := testdb.URL(t)
 	ctx := t.Context()
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -59,7 +57,7 @@ func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := Store{DB: pool, Vault: vault}
+	repo := New(pool, vault)
 	var userID, subID string
 	if err := pool.QueryRow(ctx, `INSERT INTO users(username) VALUES('legacy-user') RETURNING id::text`).Scan(&userID); err != nil {
 		t.Fatal(err)
@@ -80,7 +78,7 @@ func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, err := repo.ReserveNode(ctx, "Legacy node", "192.0.2.70", NewToken(), 22, 51820)
+	node, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), "Legacy node", "192.0.2.70", NewToken(), 22, 51820)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,28 +91,27 @@ func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
 	if err := migration.Up(); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := repo.Profile(ctx, token, node.ID)
+	profile, err := repo.Profile(ctx, middleware.GetReqID(ctx), token, node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if profile.PrivateKey != private || profile.PublicKey != serverPublic || profile.HeaderKey != header || profile.Address != "10.70.0.2/32" {
 		t.Fatal("migration changed existing VPN credentials")
 	}
-	devices, err := repo.Devices(ctx, userID)
+	devices, err := repo.Devices(ctx, middleware.GetReqID(ctx), userID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(devices) != 1 || devices[0].Name != "Main device" {
 		t.Fatal("legacy keys were not assigned to one device")
 	}
-	user, err := repo.User(ctx, userID)
+	user, err := repo.User(ctx, middleware.GetReqID(ctx), userID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if user.DeviceLimit != nil || user.DeviceCount != 1 {
 		t.Fatal("migration unexpectedly restricted an existing user")
 	}
-	// The supported rollback must also retain the existing private key and address.
 	if err := migration.Steps(-1); err != nil {
 		t.Fatal(err)
 	}

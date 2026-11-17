@@ -1,37 +1,50 @@
 package users
 
 import (
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/store"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
-	users, err := h.store.Users(r.Context())
+	const op = "internal/api/users/users"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	users, err := h.store.Users(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, users)
 }
-
 func (h *Handler) user(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/users/user"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
-	user, err := h.store.User(r.Context(), id)
+	user, err := h.store.User(r.Context(), requestID, id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, user)
 }
-
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/users/createUser"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var req struct {
 		Username   string  `json:"username"`
 		TelegramID *int64  `json:"telegram_id"`
@@ -55,9 +68,9 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token := store.NewToken()
-		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), req.Username, req.TelegramID, *req.PlanID, token)
+		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), requestID, req.Username, req.TelegramID, *req.PlanID, token)
 		if err != nil {
-			httpx.HandleError(w, err)
+			httpx.HandleError(w, r, err)
 			return
 		}
 		httpx.Respond(w, http.StatusCreated, struct {
@@ -67,15 +80,18 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		}{user, h.publicURL + "/s/" + token, accessID})
 		return
 	}
-	u, err := h.store.CreateUser(r.Context(), req.Username, req.TelegramID)
+	u, err := h.store.CreateUser(r.Context(), requestID, req.Username, req.TelegramID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusCreated, u)
 }
-
 func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/users/updateUser"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
@@ -106,30 +122,35 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := h.store.UpdateUser(r.Context(), id, req.Username, telegramID, req.TelegramID != nil, req.Enabled); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.UpdateUser(r.Context(), requestID, id, req.Username, telegramID, req.TelegramID != nil, req.Enabled); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func validUsername(username string) bool {
 	return username != "" && len(username) <= 128 && !strings.ContainsRune(username, 0)
 }
-
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/users/deleteUser"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
-	if err := h.store.DeleteUser(r.Context(), id); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.DeleteUser(r.Context(), requestID, id); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) bulkEnabled(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/users/bulkEnabled"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var req struct {
 		IDs     []string `json:"ids"`
 		Enabled *bool    `json:"enabled"`
@@ -155,9 +176,9 @@ func (h *Handler) bulkEnabled(w http.ResponseWriter, r *http.Request) {
 		seen[id] = true
 		req.IDs[index] = id
 	}
-	updated, err := h.store.BulkUserEnabled(r.Context(), req.IDs, *req.Enabled)
+	updated, err := h.store.BulkUserEnabled(r.Context(), requestID, req.IDs, *req.Enabled)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, map[string]int64{"updated": updated})

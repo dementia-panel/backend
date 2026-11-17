@@ -15,8 +15,6 @@ type Snapshot struct {
 	Telegram Status `json:"telegram"`
 	Webhook  Status `json:"webhook"`
 }
-
-// Tracker records outcomes of actual integration operations without exposing credentials.
 type Tracker struct {
 	mu     sync.RWMutex
 	status Status
@@ -48,7 +46,6 @@ func (t *Tracker) Snapshot() Status {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	result := t.status
-	// Return independent timestamp values to keep the snapshot immutable for callers.
 	if result.CheckedAt != nil {
 		value := *result.CheckedAt
 		result.CheckedAt = &value

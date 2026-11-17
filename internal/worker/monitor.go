@@ -2,10 +2,12 @@ package worker
 
 import (
 	"context"
+	"dementia/backend/internal/lib/logger/sl"
+	"dementia/backend/internal/store"
 	"log/slog"
 	"time"
 
-	"dementia/backend/internal/store"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func MonitorNodes(ctx context.Context, repo store.Store, interval time.Duration) {
@@ -13,7 +15,7 @@ func MonitorNodes(ctx context.Context, repo store.Store, interval time.Duration)
 	defer ticker.Stop()
 	for {
 		if err := checkNodes(ctx, repo); err != nil && ctx.Err() == nil {
-			slog.Error("node monitoring failed", "error", err)
+			slog.Error("node monitoring failed", sl.Err(err))
 		}
 		select {
 		case <-ctx.Done():
@@ -22,13 +24,11 @@ func MonitorNodes(ctx context.Context, repo store.Store, interval time.Duration)
 		}
 	}
 }
-
 func checkNodes(ctx context.Context, repo store.Store) error {
-	check, err := repo.StartConnectionCheck(ctx)
+	check, err := repo.StartConnectionCheck(ctx, middleware.GetReqID(ctx))
 	if err != nil || len(check.NodeIDs) == 0 {
 		return err
 	}
-	// Allow a full agent poll and request cycle for a fresh acknowledgment.
 	timeout := time.NewTimer(12 * time.Second)
 	defer timeout.Stop()
 	select {
@@ -36,7 +36,7 @@ func checkNodes(ctx context.Context, repo store.Store) error {
 		return ctx.Err()
 	case <-timeout.C:
 	}
-	changes, err := repo.FinishConnectionCheck(ctx, check)
+	changes, err := repo.FinishConnectionCheck(ctx, middleware.GetReqID(ctx), check)
 	if err != nil {
 		return err
 	}

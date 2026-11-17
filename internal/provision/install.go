@@ -3,6 +3,7 @@ package provision
 import (
 	"bytes"
 	"context"
+	"dementia/backend/internal/vpn"
 	"errors"
 	"fmt"
 	"io"
@@ -11,11 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"dementia/backend/internal/vpn"
 	"golang.org/x/crypto/ssh"
 )
 
-// Resolve Latest once so every file belongs to the same published release.
 const latestBundleScript = `release_url=$(curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
     --head --output /dev/null --write-out '%{url_effective}' \
     --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 90 \
@@ -93,7 +92,6 @@ printf '%s\n' `)
 	}
 	return fields[0], fields[1], nil
 }
-
 func runSSH(ctx context.Context, req Request, payload string, stdout, stderr io.Writer) error {
 	if req.VerifyHostKey == nil {
 		return errors.New("SSH server key verifier is not configured")
@@ -107,21 +105,17 @@ func runSSH(ctx context.Context, req Request, payload string, stdout, stderr io.
 	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
 		return errors.New("could not initialize SSH timeout")
 	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	stop := context.AfterFunc(ctx, func() {
+		conn.Close()
+	})
 	defer stop()
-
 	var hostKeyErr error
 	hostKeyVerified := false
-	clientConfig := &ssh.ClientConfig{
-		User:              req.Login,
-		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
-		Auth:              []ssh.AuthMethod{ssh.Password(req.Password)},
-		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			hostKeyErr = req.VerifyHostKey(ctx, ssh.FingerprintSHA256(key))
-			hostKeyVerified = hostKeyErr == nil
-			return hostKeyErr
-		},
-	}
+	clientConfig := &ssh.ClientConfig{User: req.Login, HostKeyAlgorithms: []string{ssh.KeyAlgoED25519}, Auth: []ssh.AuthMethod{ssh.Password(req.Password)}, HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		hostKeyErr = req.VerifyHostKey(ctx, ssh.FingerprintSHA256(key))
+		hostKeyVerified = hostKeyErr == nil
+		return hostKeyErr
+	}}
 	sshConn, channels, requests, err := ssh.NewClientConn(conn, address, clientConfig)
 	if err != nil {
 		if hostKeyErr != nil {
@@ -142,7 +136,6 @@ func runSSH(ctx context.Context, req Request, payload string, stdout, stderr io.
 		return errors.New("could not open SSH session")
 	}
 	defer session.Close()
-
 	var input strings.Builder
 	command := `set -eu
 umask 077
@@ -195,7 +188,6 @@ func (w *stageWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
-
 func Remove(ctx context.Context, req Request) error {
 	payload := "node_id=" + shellQuote(req.ID) + "\n" + cleanupScript
 	if err := runSSH(ctx, req, payload, io.Discard, io.Discard); err != nil {
@@ -242,7 +234,6 @@ func (out *keyOutput) Write(p []byte) (int, error) {
 	_, _ = out.buffer.Write(p[:min(len(p), remaining)])
 	return len(p), nil
 }
-
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

@@ -6,7 +6,6 @@ import (
 	"sync"
 )
 
-// Group closes job admission before waiting for existing jobs.
 type Group struct {
 	mu      sync.Mutex
 	closed  bool
@@ -29,7 +28,6 @@ func (g *Group) Start(name string, run func()) bool {
 	})
 	return true
 }
-
 func (g *Group) CloseAndWait() {
 	g.mu.Lock()
 	g.closed = true

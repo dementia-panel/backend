@@ -3,14 +3,13 @@ package worker
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"dementia/backend/internal/store"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
 	"time"
-
-	"dementia/backend/internal/store"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -18,14 +17,9 @@ type transportFunc func(*http.Request) (*http.Response, error)
 func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
-
 func TestSendWebhook(t *testing.T) {
 	const secret = "test-secret"
-	event := store.Event{
-		ID: 42, Scope: "node", Name: "node.connection_lost",
-		Timestamp: time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC),
-		Data:      json.RawMessage(`{"online":false}`),
-	}
+	event := store.Event{ID: 42, Scope: "node", Name: "node.connection_lost", Timestamp: time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC), Data: json.RawMessage(`{"online":false}`)}
 	for _, status := range []int{http.StatusNoContent, http.StatusServiceUnavailable} {
 		client := &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 			defer req.Body.Close()
@@ -35,9 +29,7 @@ func TestSendWebhook(t *testing.T) {
 			}
 			mac := hmac.New(sha256.New, []byte(secret))
 			mac.Write(body)
-			if req.Method != http.MethodPost ||
-				req.Header.Get("X-Remnawave-Signature") != hex.EncodeToString(mac.Sum(nil)) ||
-				req.Header.Get("X-Remnawave-Timestamp") != event.Timestamp.Format(time.RFC3339Nano) {
+			if req.Method != http.MethodPost || req.Header.Get("X-Remnawave-Signature") != hex.EncodeToString(mac.Sum(nil)) || req.Header.Get("X-Remnawave-Timestamp") != event.Timestamp.Format(time.RFC3339Nano) {
 				t.Error("unexpected webhook method or signature headers")
 			}
 			var received store.Event

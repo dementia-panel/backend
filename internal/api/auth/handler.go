@@ -2,14 +2,17 @@ package auth
 
 import (
 	"context"
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 )
@@ -17,13 +20,11 @@ import (
 type LoginLimiter interface {
 	Allow(context.Context) (bool, error)
 }
-
 type Handler struct {
-	store      store.Store
-	origin     string
-	signingKey []byte
-	limiter    LoginLimiter
-
+	store         store.Store
+	origin        string
+	signingKey    []byte
+	limiter       LoginLimiter
 	mu            sync.Mutex
 	windowEnd     time.Time
 	loginAttempts int
@@ -33,7 +34,6 @@ type Handler struct {
 func New(repo store.Store, origin string, signingKey []byte, limiter LoginLimiter) *Handler {
 	return &Handler{store: repo, origin: origin, signingKey: signingKey, limiter: limiter, passwordSlots: make(chan struct{}, 2)}
 }
-
 func (h *Handler) Register(r chi.Router) {
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Use(h.checkOrigin)
@@ -45,13 +45,12 @@ func (h *Handler) Register(r chi.Router) {
 		r.Post("/complete-setup", h.completeOnboarding)
 	})
 }
-
 func (h *Handler) RequireSession(next http.Handler) http.Handler {
 	return h.checkOrigin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if username, ok := h.authenticate(w, r); ok {
-			required, err := h.store.AdminNeedsPasswordChange(r.Context(), username)
+			required, err := h.store.AdminNeedsPasswordChange(r.Context(), middleware.GetReqID(r.Context()), username)
 			if err != nil {
-				httpx.HandleError(w, err)
+				httpx.HandleError(w, r, err)
 				return
 			}
 			if required {
@@ -62,7 +61,6 @@ func (h *Handler) RequireSession(next http.Handler) http.Handler {
 		}
 	}))
 }
-
 func (h *Handler) checkOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -73,8 +71,11 @@ func (h *Handler) checkOrigin(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, bool) {
+	const op = "internal/api/auth/authenticate"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	access := readToken(r, accessCookie)
 	var accessSession string
 	if access != "" {
@@ -88,7 +89,6 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 		}
 		accessSession = id
 	}
-	// Browsers omit the access cookie after its expiration.
 	refresh := readToken(r, refreshCookie)
 	id, err := h.parseToken(refresh, "refresh")
 	if err != nil || (accessSession != "" && accessSession != id) {
@@ -101,12 +101,12 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 	}
 	pair, err := h.issuePair(id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return "", false
 	}
-	rotated, err := h.store.RotateAdminSession(r.Context(), id, refresh, pair.refresh, pair.refreshExpires())
+	rotated, err := h.store.RotateAdminSession(r.Context(), requestID, id, refresh, pair.refresh, pair.refreshExpires())
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return "", false
 	}
 	if !rotated {
@@ -116,14 +116,17 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 	pair.writeCookies(w)
 	return username, true
 }
-
 func (h *Handler) lookupSession(w http.ResponseWriter, r *http.Request, id string) (string, bool) {
-	username, err := h.store.AdminSession(r.Context(), id)
+	const op = "internal/api/auth/lookupSession"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	username, err := h.store.AdminSession(r.Context(), requestID, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		httpx.Failure(w, http.StatusUnauthorized, "authentication required")
 	case err != nil:
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 	default:
 		return username, true
 	}

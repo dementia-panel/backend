@@ -1,32 +1,28 @@
 package apitokens
 
 import (
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/store"
 	"net/http"
 	"strings"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 const tokenPrefix = "dementia_api_"
-
-// Registered keys issued before the rename remain valid until revoked.
 const legacyTokenPrefix = "amz_api_"
 const previousTokenPrefix = "relay_api_"
 
-type Handler struct {
-	store store.Store
-}
+type Handler struct{ store store.Store }
 
 func Register(r chi.Router, repo store.Store) {
 	h := &Handler{store: repo}
 	r.Get("/api-tokens", h.list)
 	r.Post("/api-tokens", h.create)
 	r.Delete("/api-tokens/{id}", h.delete)
+	r.Patch("/api-tokens/{id}", h.rename)
 }
-
-// AllowBearer authenticates requests with an Authorization header using an API token.
 func AllowBearer(repo store.Store, requireSession func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		session := requireSession(next)
@@ -37,16 +33,14 @@ func AllowBearer(repo store.Store, requireSession func(http.Handler) http.Handle
 				return
 			}
 			token := httpx.Bearer(r)
-			validFormat := (strings.HasPrefix(token, tokenPrefix) && len(token) == len(tokenPrefix)+43) ||
-				(strings.HasPrefix(token, legacyTokenPrefix) && len(token) == len(legacyTokenPrefix)+43) ||
-				(strings.HasPrefix(token, previousTokenPrefix) && len(token) == len(previousTokenPrefix)+43)
+			validFormat := (strings.HasPrefix(token, tokenPrefix) && len(token) == len(tokenPrefix)+43) || (strings.HasPrefix(token, legacyTokenPrefix) && len(token) == len(legacyTokenPrefix)+43) || (strings.HasPrefix(token, previousTokenPrefix) && len(token) == len(previousTokenPrefix)+43)
 			if len(authorization) != 1 || !validFormat {
 				httpx.Failure(w, http.StatusUnauthorized, "invalid API token")
 				return
 			}
-			valid, err := repo.APITokenExists(r.Context(), token)
+			valid, err := repo.APITokenExists(r.Context(), middleware.GetReqID(r.Context()), token)
 			if err != nil {
-				httpx.HandleError(w, err)
+				httpx.HandleError(w, r, err)
 				return
 			}
 			if !valid {

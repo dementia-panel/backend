@@ -20,9 +20,9 @@ for (const link of document.querySelectorAll('[data-copy-key]')) {
 
     try {
       if (window.ClipboardItem && navigator.clipboard.write) {
-        // Start the clipboard write in the click event, before waiting for the request.
+
         const content = key.then((text) => new Blob([text], { type: 'text/plain' }))
-        // A permission failure may cause the browser to ignore the pending content.
+
         content.catch(() => {})
         await navigator.clipboard.write([new ClipboardItem({ 'text/plain': content })])
       } else {
@@ -30,7 +30,7 @@ for (const link of document.querySelectorAll('[data-copy-key]')) {
       }
       status.textContent = 'Ключ скопирован.'
     } catch {
-      // A browser that blocks clipboard access can still display the key for manual copying.
+
       try {
         fallback.value = await key
         fallback.hidden = false

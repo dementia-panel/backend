@@ -4,6 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/integration"
+	"dementia/backend/internal/lib/logger/sl"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/integration"
-	"dementia/backend/internal/store"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 const WebhookPath = "/api/telegram/webhook"
@@ -27,12 +30,10 @@ type Bot struct {
 }
 
 func New(config Config, repo store.Store) *Bot {
-	return &Bot{status: integration.NewTracker(config.Token != ""), config: config, repo: repo, client: client{
-		baseURL: "https://api.telegram.org/bot" + config.Token,
-		http:    &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-	}}
+	return &Bot{status: integration.NewTracker(config.Token != ""), config: config, repo: repo, client: client{baseURL: "https://api.telegram.org/bot" + config.Token, http: &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}}}
 }
-
 func (b *Bot) Status() integration.Status {
 	if b.status == nil {
 		return integration.NewTracker(b.config.Token != "").Snapshot()
@@ -44,11 +45,9 @@ func (b *Bot) recordStatus(success bool) {
 		b.status.Record(success)
 	}
 }
-
 func (b *Bot) WebhookEnabled() bool {
 	return b.config.Mode == "webhook"
 }
-
 func (b *Bot) Run(ctx context.Context, publicURL string) {
 	defer b.client.http.CloseIdleConnections()
 	for ctx.Err() == nil {
@@ -65,18 +64,14 @@ func (b *Bot) Run(ctx context.Context, publicURL string) {
 			return
 		}
 		if ctx.Err() == nil {
-			slog.Warn("Telegram bot configuration failed", "mode", b.config.Mode, "error", err)
+			slog.Warn("Telegram bot configuration failed", "mode", b.config.Mode, sl.Err(err))
 		}
 		pause(ctx, retryDelay(err, 5*time.Second))
 	}
 }
-
 func (b *Bot) configure(ctx context.Context, publicURL string) error {
 	if b.WebhookEnabled() {
-		return b.client.call(ctx, "setWebhook", map[string]any{
-			"url": publicURL + WebhookPath, "secret_token": b.config.WebhookSecret,
-			"allowed_updates": []string{"message"}, "max_connections": 1,
-		}, nil)
+		return b.client.call(ctx, "setWebhook", map[string]any{"url": publicURL + WebhookPath, "secret_token": b.config.WebhookSecret, "allowed_updates": []string{"message"}, "max_connections": 1}, nil)
 	}
 	return b.client.call(ctx, "deleteWebhook", struct{}{}, nil)
 }
@@ -96,13 +91,11 @@ func (b *Bot) poll(ctx context.Context) {
 	var offset int64
 	for ctx.Err() == nil {
 		var updates []update
-		err := b.client.call(ctx, "getUpdates", map[string]any{
-			"offset": offset, "timeout": 25, "limit": 20, "allowed_updates": []string{"message"},
-		}, &updates)
+		err := b.client.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 25, "limit": 20, "allowed_updates": []string{"message"}}, &updates)
 		if err != nil {
 			if ctx.Err() == nil {
 				b.recordStatus(false)
-				slog.Warn("Telegram polling failed", "error", err)
+				slog.Warn("Telegram polling failed", sl.Err(err))
 			}
 			pause(ctx, retryDelay(err, 5*time.Second))
 			continue
@@ -111,7 +104,7 @@ func (b *Bot) poll(ctx context.Context) {
 		for _, item := range updates {
 			if err := b.handleUpdate(ctx, item); err != nil {
 				if ctx.Err() == nil {
-					slog.Warn("Telegram command failed", "error", err)
+					slog.Warn("Telegram command failed", sl.Err(err))
 				}
 				pause(ctx, retryDelay(err, 5*time.Second))
 				break
@@ -120,8 +113,11 @@ func (b *Bot) poll(ctx context.Context) {
 		}
 	}
 }
-
 func (b *Bot) Webhook(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/telegram/Webhook"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling Telegram webhook")
 	expected := sha256.Sum256([]byte(b.config.WebhookSecret))
 	provided := sha256.Sum256([]byte(r.Header.Get("X-Telegram-Bot-Api-Secret-Token")))
 	if !b.WebhookEnabled() || subtle.ConstantTimeCompare(expected[:], provided[:]) != 1 {
@@ -130,23 +126,20 @@ func (b *Bot) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	var item update
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
-	// Telegram may add fields to Update and Message.
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
 		httpx.Failure(w, http.StatusBadRequest, "invalid Telegram update")
 		return
 	}
 	if err := b.handleUpdate(r.Context(), item); err != nil {
-		slog.Warn("Telegram command failed", "error", err)
+		log.WarnContext(r.Context(), "Telegram command failed", sl.Err(err))
 		httpx.Failure(w, http.StatusServiceUnavailable, "Telegram command temporarily unavailable")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-
 func (b *Bot) handleUpdate(ctx context.Context, item update) error {
 	message := item.Message
-	if message == nil || message.Chat.ID != b.config.ChatID ||
-		(b.config.ThreadID != 0 && b.config.ThreadID != message.ThreadID) {
+	if message == nil || message.Chat.ID != b.config.ChatID || (b.config.ThreadID != 0 && b.config.ThreadID != message.ThreadID) {
 		return nil
 	}
 	fields := strings.Fields(message.Text)
@@ -158,7 +151,7 @@ func (b *Bot) handleUpdate(ctx context.Context, item update) error {
 	case "/start", "/help":
 		return b.send(ctx, "/nodes — состояние нод и трафик за сегодня (UTC).")
 	case "/nodes", "/status":
-		rows, err := b.repo.TelegramNodeMetrics(ctx)
+		rows, err := b.repo.TelegramNodeMetrics(ctx, middleware.GetReqID(ctx))
 		if err != nil {
 			return errors.New("could not read node metrics")
 		}
@@ -167,7 +160,6 @@ func (b *Bot) handleUpdate(ctx context.Context, item update) error {
 		return nil
 	}
 }
-
 func (b *Bot) send(ctx context.Context, text string) error {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -182,7 +174,6 @@ func (b *Bot) send(ctx context.Context, text string) error {
 	}
 	return err
 }
-
 func formatMetrics(rows []store.TelegramNodeMetric) string {
 	if len(rows) == 0 {
 		return "Ноды пока не зарегистрированы."
@@ -212,7 +203,6 @@ func formatMetrics(rows []store.TelegramNodeMetric) string {
 	}
 	return text.String()
 }
-
 func retryDelay(err error, fallback time.Duration) time.Duration {
 	var response *apiError
 	if errors.As(err, &response) {
@@ -220,7 +210,6 @@ func retryDelay(err error, fallback time.Duration) time.Duration {
 	}
 	return fallback
 }
-
 func pause(ctx context.Context, delay time.Duration) {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

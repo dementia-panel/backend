@@ -3,55 +3,19 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"dementia/backend/internal/infrastructure/config"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strconv"
 	"time"
 )
 
-type Config struct {
-	Token         string
-	Mode          string
-	ChatID        int64
-	ThreadID      int64
-	WebhookSecret string
-}
-
-var tokenPattern = regexp.MustCompile(`^[0-9]+:[A-Za-z0-9_-]+$`)
-var secretPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`)
+type Config = config.Telegram
 
 func ParseConfig(token, mode, chatID, threadID, secret string) (Config, error) {
-	if token == "" {
-		return Config{}, nil
-	}
-	if !tokenPattern.MatchString(token) {
-		return Config{}, errors.New("invalid TELEGRAM_BOT_TOKEN")
-	}
-	if mode == "" {
-		mode = "polling"
-	}
-	if mode != "polling" && mode != "webhook" {
-		return Config{}, errors.New("TELEGRAM_MODE must be polling or webhook")
-	}
-	chat, err := strconv.ParseInt(chatID, 10, 64)
-	if err != nil || chat == 0 {
-		return Config{}, errors.New("TELEGRAM_CHAT_ID must be a nonzero integer")
-	}
-	var thread int64
-	if threadID != "" {
-		thread, err = strconv.ParseInt(threadID, 10, 32)
-		if err != nil || thread < 1 {
-			return Config{}, errors.New("TELEGRAM_THREAD_ID must be positive")
-		}
-	}
-	if mode == "webhook" && (!secretPattern.MatchString(secret) || len(secret) < 32) {
-		return Config{}, errors.New("TELEGRAM_WEBHOOK_SECRET must contain 32–256 letters, digits, underscores or hyphens")
-	}
-	return Config{token, mode, chat, thread, secret}, nil
+	return config.ParseTelegram(token, mode, chatID, threadID, secret)
 }
 
 type apiError struct {
@@ -59,7 +23,9 @@ type apiError struct {
 	retryAfter time.Duration
 }
 
-func (e *apiError) Error() string { return fmt.Sprintf("Telegram API error %d", e.code) }
+func (e *apiError) Error() string {
+	return fmt.Sprintf("Telegram API error %d", e.code)
+}
 
 type client struct {
 	baseURL string

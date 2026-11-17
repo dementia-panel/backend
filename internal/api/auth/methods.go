@@ -3,13 +3,16 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
-	"dementia/backend/internal/api/httpx"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/argon2"
 )
@@ -22,21 +25,25 @@ type credentials struct {
 }
 
 func (h *Handler) setupStatus(w http.ResponseWriter, r *http.Request) {
-	configured, err := h.store.AdminConfigured(r.Context())
+	const op = "internal/api/auth/setupStatus"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	configured, err := h.store.AdminConfigured(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
-	httpx.Respond(w, http.StatusOK, map[string]bool{
-		"setup_required":  !configured,
-		"setup_available": !configured,
-	})
+	httpx.Respond(w, http.StatusOK, map[string]bool{"setup_required": !configured, "setup_available": !configured})
 }
-
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
-	configured, err := h.store.AdminConfigured(r.Context())
+	const op = "internal/api/auth/setup"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	configured, err := h.store.AdminConfigured(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	if configured {
@@ -55,7 +62,9 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	if !h.acquirePasswordSlot(w) {
 		return
 	}
-	defer func() { <-h.passwordSlots }()
+	defer func() {
+		<-h.passwordSlots
+	}()
 	salt := make([]byte, 16)
 	rand.Read(salt)
 	var pair tokenPair
@@ -64,15 +73,18 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 		pair, err = h.issuePair(id)
 		return pair.refresh, pair.refreshExpires(), err
 	}
-	if err := h.store.SetupAdmin(r.Context(), req.Username, salt, passwordHash(req.Password, salt), issue); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.SetupAdmin(r.Context(), requestID, req.Username, salt, passwordHash(req.Password, salt), issue); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	pair.writeCookies(w)
 	httpx.Respond(w, http.StatusCreated, map[string]string{"username": req.Username})
 }
-
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/auth/login"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var req credentials
 	if !httpx.Decode(w, r, &req) {
 		return
@@ -85,13 +97,15 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !h.acquirePasswordSlot(w) {
 		return
 	}
-	defer func() { <-h.passwordSlots }()
+	defer func() {
+		<-h.passwordSlots
+	}()
 	if !h.allowLogin(w, r) {
 		return
 	}
-	salt, hash, err := h.store.AdminCredentials(r.Context(), req.Username)
+	salt, hash, err := h.store.AdminCredentials(r.Context(), requestID, req.Username)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -108,51 +122,55 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		pair, err = h.issuePair(id)
 		return pair.refresh, pair.refreshExpires(), err
 	}
-	if err := h.store.CreateAdminSession(r.Context(), req.Username, salt, hash, issue); err != nil {
+	if err := h.store.CreateAdminSession(r.Context(), requestID, req.Username, salt, hash, issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			httpx.Failure(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	pair.writeCookies(w)
 	httpx.Respond(w, http.StatusOK, map[string]string{"username": req.Username})
 }
-
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/auth/me"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	if username, ok := h.authenticate(w, r); ok {
-		required, err := h.store.AdminNeedsPasswordChange(r.Context(), username)
+		required, err := h.store.AdminNeedsPasswordChange(r.Context(), requestID, username)
 		if err != nil {
-			httpx.HandleError(w, err)
+			httpx.HandleError(w, r, err)
 			return
 		}
 		httpx.Respond(w, http.StatusOK, map[string]any{"username": username, "password_change_required": required})
 	}
 }
-
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/auth/logout"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id, err := h.parseToken(readToken(r, accessCookie), "access")
 	if err == nil {
-		err = h.store.DeleteAdminSession(r.Context(), id)
+		err = h.store.DeleteAdminSession(r.Context(), requestID, id)
 	} else if refresh := readToken(r, refreshCookie); refresh != "" {
-		err = h.store.DeleteAdminSessionByRefresh(r.Context(), refresh)
+		err = h.store.DeleteAdminSessionByRefresh(r.Context(), requestID, refresh)
 	} else {
 		err = nil
 	}
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	setTokenCookie(w, accessCookie, "", time.Unix(0, 0), -1)
 	setTokenCookie(w, refreshCookie, "", time.Unix(0, 0), -1)
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func passwordHash(password string, salt []byte) []byte {
 	return argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32)
 }
-
 func (h *Handler) acquirePasswordSlot(w http.ResponseWriter) bool {
 	select {
 	case h.passwordSlots <- struct{}{}:
@@ -163,8 +181,11 @@ func (h *Handler) acquirePasswordSlot(w http.ResponseWriter) bool {
 		return false
 	}
 }
-
 func (h *Handler) allowLogin(w http.ResponseWriter, r *http.Request) bool {
+	const op = "internal/api/auth/allowLogin"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	if h.limiter != nil {
 		allowed, err := h.limiter.Allow(r.Context())
 		if err != nil {
@@ -192,16 +213,18 @@ func (h *Handler) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	h.loginAttempts++
 	return true
 }
-
-// completeOnboarding is available only to an authenticated administrator with a temporary credential.
 func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/auth/completeOnboarding"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	username, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
-	required, err := h.store.AdminNeedsPasswordChange(r.Context(), username)
+	required, err := h.store.AdminNeedsPasswordChange(r.Context(), requestID, username)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	if !required {
@@ -220,7 +243,9 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 	if !h.acquirePasswordSlot(w) {
 		return
 	}
-	defer func() { <-h.passwordSlots }()
+	defer func() {
+		<-h.passwordSlots
+	}()
 	salt := make([]byte, 16)
 	rand.Read(salt)
 	var pair tokenPair
@@ -229,8 +254,8 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 		pair, err = h.issuePair(id)
 		return pair.refresh, pair.refreshExpires(), err
 	}
-	if err := h.store.CompleteAdminOnboarding(r.Context(), username, req.Username, salt, passwordHash(req.Password, salt), issue); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.CompleteAdminOnboarding(r.Context(), requestID, username, req.Username, salt, passwordHash(req.Password, salt), issue); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	pair.writeCookies(w)

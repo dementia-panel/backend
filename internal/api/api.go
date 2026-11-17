@@ -2,9 +2,6 @@ package api
 
 import (
 	"context"
-	"net/http"
-	"time"
-
 	"dementia/backend/internal/api/agent"
 	"dementia/backend/internal/api/apitokens"
 	"dementia/backend/internal/api/auth"
@@ -18,10 +15,14 @@ import (
 	"dementia/backend/internal/api/users"
 	"dementia/backend/internal/integration"
 	"dementia/backend/internal/jobs"
-	"dementia/backend/internal/logging"
+	logging "dementia/backend/internal/lib/logger"
 	"dementia/backend/internal/store"
 	"dementia/backend/internal/telegram"
+	"net/http"
+	"time"
+
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type API struct {
@@ -38,9 +39,11 @@ type API struct {
 
 func (a *API) Handler() http.Handler {
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Use(logging.Requests, logging.RecoverRequests)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-ID", middleware.GetReqID(r.Context()))
 			ctx, cancel := context.WithTimeout(r.Context(), 18*time.Second)
 			defer cancel()
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -69,4 +72,7 @@ func (a *API) Handler() http.Handler {
 	publicsubscription.Register(r, a.Store, a.PublicURL)
 	agent.Register(r, a.Store)
 	return r
+}
+func NewAPI(repo store.Store, key []byte, publicURL string, ctx context.Context, ready func(context.Context) error) *API {
+	return &API{Store: repo, JWTSigningKey: key, PublicURL: publicURL, Context: ctx, Ready: ready}
 }

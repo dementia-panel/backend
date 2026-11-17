@@ -18,7 +18,7 @@ x-logging: &logging
 
 services:
   backend:
-    container_name: ${COMPOSE_PROJECT_NAME}-backend
+    container_name: dementia-backend
     <<: [*common, *logging]
     image: bor333/dementia-backend:latest
     stop_grace_period: 30s
@@ -46,7 +46,7 @@ services:
         condition: service_healthy
 
   db:
-    container_name: ${COMPOSE_PROJECT_NAME}-db
+    container_name: dementia-db
     <<: [*common, *logging]
     image: postgres:18.4
     shm_size: 512mb
@@ -66,7 +66,7 @@ services:
       retries: 5
 
   valkey:
-    container_name: ${COMPOSE_PROJECT_NAME}-valkey
+    container_name: dementia-valkey
     <<: [*common, *logging]
     image: valkey/valkey:9-alpine
     volumes:
@@ -79,7 +79,7 @@ services:
       retries: 5
 
   frontend:
-    container_name: ${COMPOSE_PROJECT_NAME}-panel
+    container_name: dementia-panel
     <<: [*common, *logging]
     image: bor333/dementia-panel:latest
     ports:
@@ -102,7 +102,7 @@ services:
 
 networks:
   panel:
-    name: ${COMPOSE_PROJECT_NAME}-network
+    name: dementia-network
     driver: bridge
 
 volumes:

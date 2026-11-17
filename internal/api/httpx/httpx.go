@@ -2,6 +2,9 @@ package httpx
 
 import (
 	"context"
+	"dementia/backend/internal/lib/logger/sl"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,20 +14,23 @@ import (
 	"strconv"
 	"strings"
 
-	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func Bearer(r *http.Request) string {
+	const op = "internal/api/httpx/Bearer"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		return ""
 	}
 	return token
 }
-
 func Respond(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -33,29 +39,27 @@ func Respond(w http.ResponseWriter, status int, value any) {
 		_ = json.NewEncoder(w).Encode(value)
 	}
 }
-
 func Failure(w http.ResponseWriter, status int, message string) {
 	Respond(w, status, map[string]string{"error": message})
 }
-
-func HandleError(w http.ResponseWriter, err error) {
+func HandleError(w http.ResponseWriter, r *http.Request, err error) {
+	const op = "internal/api/httpx/HandleError"
+	log := with.WithOpAndRequestID(slog.Default(), op, middleware.GetReqID(r.Context()))
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		Failure(w, 404, "resource not found")
 	case errors.Is(err, store.ErrDeviceLimit), errors.Is(err, store.ErrAmbiguousUser), errors.Is(err, store.ErrNodeUnavailable), errors.Is(err, store.ErrAddressPoolFull):
 		Failure(w, 409, err.Error())
-	case errors.Is(err, context.DeadlineExceeded),
-		errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014" || pgErr.Code == "40P01" || pgErr.Code == "40001"):
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014" || pgErr.Code == "40P01" || pgErr.Code == "40001"):
 		Failure(w, http.StatusServiceUnavailable, "database operation temporarily unavailable")
 	case errors.As(err, &pgErr) && pgErr.Code == "23505":
 		Failure(w, 409, "resource already exists")
 	default:
-		slog.Error("request failed", "type", ErrorType(err))
+		log.ErrorContext(r.Context(), "request failed", sl.Err(err))
 		Failure(w, 500, "internal error")
 	}
 }
-
 func ErrorType(err error) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -63,13 +67,19 @@ func ErrorType(err error) string {
 	}
 	return "backend"
 }
-
 func Decode(w http.ResponseWriter, r *http.Request, value any) bool {
+	const op = "internal/api/httpx/Decode"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	return DecodeBody(w, r, value)
 }
-
 func DecodeBody(w http.ResponseWriter, r *http.Request, value any) bool {
+	const op = "internal/api/httpx/DecodeBody"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if d.Decode(value) != nil || d.Decode(new(any)) != io.EOF {
@@ -82,6 +92,10 @@ func DecodeBody(w http.ResponseWriter, r *http.Request, value any) bool {
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func IDParam(w http.ResponseWriter, r *http.Request) string {
+	const op = "internal/api/httpx/IDParam"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := chi.URLParam(r, "id")
 	if !ValidID(id) {
 		Failure(w, 400, "invalid ID")
@@ -89,15 +103,21 @@ func IDParam(w http.ResponseWriter, r *http.Request) string {
 	}
 	return id
 }
-
-func ValidID(id string) bool { return uuidPattern.MatchString(id) }
-
-// UserIDParam accepts a UUID or a positive Telegram ID in user routes.
+func ValidID(id string) bool {
+	return uuidPattern.MatchString(id)
+}
 func UserIDParam(w http.ResponseWriter, r *http.Request, repo store.Store) string {
+	const op = "internal/api/httpx/UserIDParam"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	return UserReference(w, r, repo, chi.URLParam(r, "id"))
 }
-
 func UserReference(w http.ResponseWriter, r *http.Request, repo store.Store, value string) string {
+	const op = "internal/api/httpx/UserReference"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var id string
 	var err error
 	if ValidID(value) {
@@ -108,10 +128,10 @@ func UserReference(w http.ResponseWriter, r *http.Request, repo store.Store, val
 			Failure(w, http.StatusBadRequest, "user must be identified by UUID or positive telegram_id")
 			return ""
 		}
-		id, err = repo.UserIDByTelegram(r.Context(), telegram)
+		id, err = repo.UserIDByTelegram(r.Context(), requestID, telegram)
 	}
 	if err != nil {
-		HandleError(w, err)
+		HandleError(w, r, err)
 		return ""
 	}
 	return id

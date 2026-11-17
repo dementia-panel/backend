@@ -2,27 +2,39 @@ package devices
 
 import (
 	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
 	"encoding/json"
-	"github.com/go-chi/chi/v5"
+	"log/slog"
 	"net/http"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/list"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
-	result, err := h.store.Devices(r.Context(), id)
+	result, err := h.store.Devices(r.Context(), requestID, id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, result)
 }
 func deviceName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	const op = "internal/api/devices/deviceName"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -37,6 +49,10 @@ func deviceName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return name, true
 }
 func deviceID(w http.ResponseWriter, r *http.Request) string {
+	const op = "internal/api/devices/deviceID"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := chi.URLParam(r, "deviceID")
 	if !httpx.ValidID(id) {
 		httpx.Failure(w, 400, "invalid device ID")
@@ -45,6 +61,10 @@ func deviceID(w http.ResponseWriter, r *http.Request) string {
 	return id
 }
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/create"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
@@ -53,14 +73,18 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := h.store.CreateDevice(r.Context(), id, name)
+	result, err := h.store.CreateDevice(r.Context(), requestID, id, name)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 201, result)
 }
 func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/rename"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -73,13 +97,17 @@ func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.store.RenameDevice(r.Context(), user, id, name); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.RenameDevice(r.Context(), requestID, user, id, name); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 204, nil)
 }
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/remove"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -88,13 +116,17 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		return
 	}
-	if err := h.store.DeleteDevice(r.Context(), user, id); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.DeleteDevice(r.Context(), requestID, user, id); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 204, nil)
 }
 func (h *Handler) limit(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/limit"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -110,13 +142,17 @@ func (h *Handler) limit(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "device_limit must be 1–10000 or null")
 		return
 	}
-	if err := h.store.SetUserDeviceLimit(r.Context(), user, limit); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.SetUserDeviceLimit(r.Context(), requestID, user, limit); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 204, nil)
 }
 func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/profile"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -130,20 +166,23 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "invalid node ID")
 		return
 	}
-	profile, err := h.store.UserDeviceProfile(r.Context(), user, device, node)
+	profile, err := h.store.UserDeviceProfile(r.Context(), requestID, user, device, node)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	key, err := profile.AmneziaLink()
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, map[string]string{"conf": profile.Conf(), "key": key})
 }
-
 func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/detail"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -152,15 +191,18 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		return
 	}
-	device, err := h.store.Device(r.Context(), user, id)
+	device, err := h.store.Device(r.Context(), requestID, user, id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, device)
 }
-
 func (h *Handler) link(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/devices/link"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	user := httpx.UserIDParam(w, r, h.store)
 	if user == "" {
 		return
@@ -174,9 +216,9 @@ func (h *Handler) link(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "invalid subscription_id")
 		return
 	}
-	token, err := h.store.DeviceSubscriptionToken(r.Context(), user, device, subscription)
+	token, err := h.store.DeviceSubscriptionToken(r.Context(), requestID, user, device, subscription)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

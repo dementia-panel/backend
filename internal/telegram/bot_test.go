@@ -2,20 +2,20 @@ package telegram
 
 import (
 	"context"
+	"dementia/backend/internal/store"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"dementia/backend/internal/store"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 func TestWebhookAndPollingRegistration(t *testing.T) {
 	for _, mode := range []string{"webhook", "polling"} {
 		t.Run(mode, func(t *testing.T) {
@@ -58,11 +58,8 @@ func TestWebhookAndPollingRegistration(t *testing.T) {
 				secret   string
 				chat     string
 				expected int
-			}{
-				{"wrong", "-100123", 403}, {"test-secret", "-100999", 204}, {"test-secret", "-100123", 204},
-			} {
-				r := httptest.NewRequest(http.MethodPost, WebhookPath, strings.NewReader(
-					`{"message":{"text":"/help","message_thread_id":7,"chat":{"id":`+test.chat+`}}}`))
+			}{{"wrong", "-100123", 403}, {"test-secret", "-100999", 204}, {"test-secret", "-100123", 204}} {
+				r := httptest.NewRequest(http.MethodPost, WebhookPath, strings.NewReader(`{"message":{"text":"/help","message_thread_id":7,"chat":{"id":`+test.chat+`}}}`))
 				r.Header.Set("X-Telegram-Bot-Api-Secret-Token", test.secret)
 				w := httptest.NewRecorder()
 				bot.Webhook(w, r)

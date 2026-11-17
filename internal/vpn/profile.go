@@ -16,9 +16,6 @@ import (
 	"strings"
 )
 
-// These values must match the server configuration in node/entrypoint.sh.
-// Explicit zero junk settings are required: AmneziaVPN on iOS otherwise drops
-// all AWG settings, including padding, magic headers and HeaderProtectionKey.
 const Parameters = "Jc = 0\nJmin = 0\nJmax = 0\nS1 = 32\nS2 = 48\nS3 = 16\nS4 = 24\nH1 = 14581001\nH2 = 14581002\nH3 = 14581003\nH4 = 14581004\n"
 
 func KeyPair() (private, public string, err error) {
@@ -34,12 +31,10 @@ func KeyPair() (private, public string, err error) {
 	}
 	return base64.StdEncoding.EncodeToString(priv.Bytes()), base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()), nil
 }
-
 func ValidKey(key string) bool {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(key)
 	return err == nil && len(decoded) == 32 && base64.StdEncoding.EncodeToString(decoded) == key
 }
-
 func Address(offset int) string {
 	return fmt.Sprintf("10.70.%d.%d/32", offset/256, offset%256)
 }
@@ -56,18 +51,11 @@ const allowed = "0.0.0.0/0"
 
 func (p ClientProfile) Conf() string {
 	endpoint := net.JoinHostPort(p.IP, strconv.Itoa(p.Port))
-	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = %s\nDNS = %s\nMTU = %s\n%sHeaderProtectionKey = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s\nPersistentKeepalive = %s\n",
-		p.PrivateKey, p.Address, dns, mtu, Parameters, p.HeaderKey, p.PublicKey, endpoint, allowed, keepalive)
+	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = %s\nDNS = %s\nMTU = %s\n%sHeaderProtectionKey = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s\nPersistentKeepalive = %s\n", p.PrivateKey, p.Address, dns, mtu, Parameters, p.HeaderKey, p.PublicKey, endpoint, allowed, keepalive)
 }
-
-// AmneziaLink uses the AmneziaVPN guest config format with no SSH credentials.
 func (p ClientProfile) AmneziaLink() (string, error) {
 	const container = "amnezia-awg"
-	lastConfig := map[string]any{
-		"config": p.Conf(), "client_priv_key": p.PrivateKey, "server_pub_key": p.PublicKey,
-		"client_ip": p.Address, "hostName": p.IP, "port": p.Port, "mtu": mtu,
-		"allowed_ips": []string{allowed}, "persistent_keep_alive": keepalive, "HeaderProtectionKey": p.HeaderKey,
-	}
+	lastConfig := map[string]any{"config": p.Conf(), "client_priv_key": p.PrivateKey, "server_pub_key": p.PublicKey, "client_ip": p.Address, "hostName": p.IP, "port": p.Port, "mtu": mtu, "allowed_ips": []string{allowed}, "persistent_keep_alive": keepalive, "HeaderProtectionKey": p.HeaderKey}
 	for line := range strings.SplitSeq(strings.TrimSpace(Parameters), "\n") {
 		key, value, _ := strings.Cut(line, " = ")
 		lastConfig[key] = value
@@ -76,21 +64,11 @@ func (p ClientProfile) AmneziaLink() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(map[string]any{
-		"description": p.Name, "hostName": p.IP, "defaultContainer": container, "dns1": dns, "dns2": dns,
-		"containers": []any{map[string]any{
-			"container": container,
-			"awg": map[string]any{
-				"last_config": string(inner), "isThirdPartyConfig": true, "port": strconv.Itoa(p.Port), "transport_proto": "udp",
-			},
-		}},
-	})
+	data, err := json.Marshal(map[string]any{"description": p.Name, "hostName": p.IP, "defaultContainer": container, "dns1": dns, "dns2": dns, "containers": []any{map[string]any{"container": container, "awg": map[string]any{"last_config": string(inner), "isThirdPartyConfig": true, "port": strconv.Itoa(p.Port), "transport_proto": "udp"}}}})
 	if err != nil {
 		return "", err
 	}
-
 	var payload bytes.Buffer
-	// Qt's qCompress prepends the big-endian length of the uncompressed JSON.
 	payload.Write(binary.BigEndian.AppendUint32(nil, uint32(len(data))))
 	zip := zlib.NewWriter(&payload)
 	if _, err := zip.Write(data); err != nil {
@@ -102,9 +80,7 @@ func (p ClientProfile) AmneziaLink() (string, error) {
 	return "vpn://" + base64.RawURLEncoding.EncodeToString(payload.Bytes()), nil
 }
 
-type Vault struct {
-	cipher cipher.AEAD
-}
+type Vault struct{ cipher cipher.AEAD }
 
 func NewVault(key []byte) (Vault, error) {
 	if len(key) != 32 {
@@ -117,18 +93,14 @@ func NewVault(key []byte) (Vault, error) {
 	aead, err := cipher.NewGCM(block)
 	return Vault{cipher: aead}, err
 }
-
 func (v Vault) Seal(value string) []byte {
 	nonce := make([]byte, v.cipher.NonceSize())
 	return v.cipher.Seal(nonce, fillNonce(nonce), []byte(value), nil)
 }
-
 func fillNonce(nonce []byte) []byte {
-	// Go's crypto/rand.Read always fills the buffer and terminates on entropy failure.
 	rand.Read(nonce)
 	return nonce
 }
-
 func (v Vault) Open(value []byte) (string, error) {
 	size := v.cipher.NonceSize()
 	if len(value) < size {

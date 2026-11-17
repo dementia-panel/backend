@@ -47,13 +47,7 @@ func TestAmneziaLinkIncludesIOSRequiredAWGSettings(t *testing.T) {
 	if err := json.Unmarshal([]byte(guest.Containers[0].AWG.LastConfig), &client); err != nil {
 		t.Fatal(err)
 	}
-	// WGConfig.settings in the official iOS app returns an empty string if any
-	// of these fields is missing, empty or not encoded as a JSON string.
-	for key, want := range map[string]string{
-		"Jc": "0", "Jmin": "0", "Jmax": "0", "S1": "32", "S2": "48",
-		"S3": "16", "S4": "24", "H1": "14581001", "H2": "14581002",
-		"H3": "14581003", "H4": "14581004", "HeaderProtectionKey": profile.HeaderKey,
-	} {
+	for key, want := range map[string]string{"Jc": "0", "Jmin": "0", "Jmax": "0", "S1": "32", "S2": "48", "S3": "16", "S4": "24", "H1": "14581001", "H2": "14581002", "H3": "14581003", "H4": "14581004", "HeaderProtectionKey": profile.HeaderKey} {
 		if got, ok := client[key].(string); !ok || got != want {
 			t.Errorf("iOS AWG setting %s = %v, want string %q", key, client[key], want)
 		}

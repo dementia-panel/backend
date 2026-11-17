@@ -1,19 +1,26 @@
 package subscriptions
 
 import (
+	"dementia/backend/internal/api/httpx"
+	"dementia/backend/internal/lib/logger/with"
+	"dementia/backend/internal/store"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
-	"dementia/backend/internal/api/httpx"
-	"dementia/backend/internal/store"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/exportProfile"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	w.Header().Set("Cache-Control", "no-store")
 	id := httpx.IDParam(w, r)
 	if id == "" {
@@ -29,14 +36,14 @@ func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "invalid device ID")
 		return
 	}
-	profile, err := h.store.ProfileForSubscription(r.Context(), id, nodeID, deviceID)
+	profile, err := h.store.ProfileForSubscription(r.Context(), requestID, id, nodeID, deviceID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	key, err := profile.AmneziaLink()
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, struct {
@@ -44,17 +51,23 @@ func (h *Handler) exportProfile(w http.ResponseWriter, r *http.Request) {
 		Key  string `json:"key"`
 	}{profile.Conf(), key})
 }
-
 func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
-	items, err := h.store.Subscriptions(r.Context())
+	const op = "internal/api/subscriptions/subscriptions"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	items, err := h.store.Subscriptions(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, items)
 }
-
 func (h *Handler) createSubscription(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/createSubscription"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var req struct {
 		UserID    string    `json:"user_id"`
 		Name      string    `json:"name"`
@@ -73,9 +86,9 @@ func (h *Handler) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := store.NewToken()
-	sub, err := h.store.CreateSubscription(r.Context(), req.UserID, req.Name, token, req.ExpiresAt, req.NodeIDs)
+	sub, err := h.store.CreateSubscription(r.Context(), requestID, req.UserID, req.Name, token, req.ExpiresAt, req.NodeIDs)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 201, struct {
@@ -83,7 +96,6 @@ func (h *Handler) createSubscription(w http.ResponseWriter, r *http.Request) {
 		URL string `json:"url"`
 	}{sub, h.publicURL + "/s/" + token})
 }
-
 func validateNodes(w http.ResponseWriter, nodes []string) bool {
 	if len(nodes) == 0 || len(nodes) > 128 {
 		httpx.Failure(w, 400, "provide 1–128 nodes")
@@ -104,8 +116,11 @@ func validateNodes(w http.ResponseWriter, nodes []string) bool {
 	}
 	return true
 }
-
 func (h *Handler) replaceSubscriptionNodes(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/replaceSubscriptionNodes"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
@@ -116,14 +131,17 @@ func (h *Handler) replaceSubscriptionNodes(w http.ResponseWriter, r *http.Reques
 	if !httpx.Decode(w, r, &req) || !validateNodes(w, req.NodeIDs) {
 		return
 	}
-	if err := h.store.ReplaceSubscriptionNodes(r.Context(), id, req.NodeIDs); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.ReplaceSubscriptionNodes(r.Context(), requestID, id, req.NodeIDs); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) updateSubscription(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/updateSubscription"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
@@ -139,52 +157,64 @@ func (h *Handler) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, 400, "provide enabled or expires_at")
 		return
 	}
-	if err := h.store.UpdateSubscription(r.Context(), id, req.Enabled, req.ExpiresAt); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.UpdateSubscription(r.Context(), requestID, id, req.Enabled, req.ExpiresAt); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 204, nil)
 }
-
 func (h *Handler) rotateLink(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/rotateLink"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
 	token := store.NewToken()
-	if err := h.store.RotateToken(r.Context(), id, token); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.RotateToken(r.Context(), requestID, id, token); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, 200, map[string]string{"url": h.publicURL + "/s/" + token})
 }
-
 func (h *Handler) deleteSubscription(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/deleteSubscription"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
-	if err := h.store.DeleteSubscription(r.Context(), id); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.DeleteSubscription(r.Context(), requestID, id); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) revokeSubscription(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/revokeSubscription"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
 	token := store.NewToken()
-	if err := h.store.RevokeSubscription(r.Context(), id, token); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.RevokeSubscription(r.Context(), requestID, id, token); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, map[string]string{"url": h.publicURL + "/s/" + token})
 }
-
 func (h *Handler) setTrafficLimit(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/setTrafficLimit"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
@@ -200,26 +230,32 @@ func (h *Handler) setTrafficLimit(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, http.StatusBadRequest, "provide a positive traffic_limit_bytes or null")
 		return
 	}
-	if err := h.store.SetTrafficLimit(r.Context(), id, limit, false); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.SetTrafficLimit(r.Context(), requestID, id, limit, false); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) resetTraffic(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/resetTraffic"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
-	if err := h.store.SetTrafficLimit(r.Context(), id, nil, true); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.SetTrafficLimit(r.Context(), requestID, id, nil, true); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) setTrafficResetSchedule(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/setTrafficResetSchedule"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
@@ -235,23 +271,29 @@ func (h *Handler) setTrafficResetSchedule(w http.ResponseWriter, r *http.Request
 		httpx.Failure(w, http.StatusBadRequest, "provide traffic_reset_days between 1 and 366, or null")
 		return
 	}
-	if err := h.store.SetTrafficResetSchedule(r.Context(), id, days); err != nil {
-		httpx.HandleError(w, err)
+	if err := h.store.SetTrafficResetSchedule(r.Context(), requestID, id, days); err != nil {
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) plans(w http.ResponseWriter, r *http.Request) {
-	result, err := h.store.SubscriptionPlans(r.Context())
+	const op = "internal/api/subscriptions/plans"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
+	result, err := h.store.SubscriptionPlans(r.Context(), requestID)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, result)
 }
-
 func (h *Handler) savePlan(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/savePlan"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	var id string
 	if r.Method == http.MethodPut {
 		id = httpx.IDParam(w, r)
@@ -274,9 +316,9 @@ func (h *Handler) savePlan(w http.ResponseWriter, r *http.Request) {
 	if !validateNodes(w, req.NodeIDs) {
 		return
 	}
-	plan, err := h.store.SaveSubscriptionPlan(r.Context(), id, req.Name, req.NodeIDs)
+	plan, err := h.store.SaveSubscriptionPlan(r.Context(), requestID, id, req.Name, req.NodeIDs)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	status := http.StatusOK
@@ -285,25 +327,31 @@ func (h *Handler) savePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, status, plan)
 }
-
 func (h *Handler) deletePlan(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/deletePlan"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
-	err := h.store.DeleteSubscriptionPlan(r.Context(), id)
+	err := h.store.DeleteSubscriptionPlan(r.Context(), requestID, id)
 	if errors.Is(err, store.ErrPlanInUse) {
 		httpx.Failure(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusNoContent, nil)
 }
-
 func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/assignPlan"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
@@ -327,9 +375,9 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := store.NewToken()
-	subID, issued, err := h.store.AssignSubscriptionPlanAccess(r.Context(), id, planID, token, req.Enabled, expiresAt, req.ExpiresAt != nil)
+	subID, issued, err := h.store.AssignSubscriptionPlanAccess(r.Context(), requestID, id, planID, token, req.Enabled, expiresAt, req.ExpiresAt != nil)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	result := struct {
@@ -341,28 +389,34 @@ func (h *Handler) assignPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, http.StatusOK, result)
 }
-
 func (h *Handler) assignedPlan(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/assignedPlan"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.UserIDParam(w, r, h.store)
 	if id == "" {
 		return
 	}
-	sub, err := h.store.AssignedSubscription(r.Context(), id)
+	sub, err := h.store.AssignedSubscription(r.Context(), requestID, id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	httpx.Respond(w, http.StatusOK, sub)
 }
-
 func (h *Handler) subscriptionLink(w http.ResponseWriter, r *http.Request) {
+	const op = "internal/api/subscriptions/subscriptionLink"
+	requestID := middleware.GetReqID(r.Context())
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(r.Context(), "handling request")
 	id := httpx.IDParam(w, r)
 	if id == "" {
 		return
 	}
-	token, err := h.store.SubscriptionToken(r.Context(), id)
+	token, err := h.store.SubscriptionToken(r.Context(), requestID, id)
 	if err != nil {
-		httpx.HandleError(w, err)
+		httpx.HandleError(w, r, err)
 		return
 	}
 	var link *string

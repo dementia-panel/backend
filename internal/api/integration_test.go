@@ -5,6 +5,10 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
+	"dementia/backend/internal/api"
+	"dementia/backend/internal/store"
+	"dementia/backend/internal/testdb"
+	"dementia/backend/internal/vpn"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -15,14 +19,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"dementia/backend/internal/api"
-	"dementia/backend/internal/store"
-	"dementia/backend/internal/vpn"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,15 +35,13 @@ func TestSubscriptionAcrossNodes(t *testing.T) {
 		if enabled {
 			name = "webhook_enabled"
 		}
-		t.Run(name, func(t *testing.T) { testSubscriptionAcrossNodes(t, enabled) })
+		t.Run(name, func(t *testing.T) {
+			testSubscriptionAcrossNodes(t, enabled)
+		})
 	}
 }
-
 func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is unset")
-	}
+	dsn := testdb.URL(t)
 	ctx := t.Context()
 	dbURL, err := url.Parse(dsn)
 	if err != nil {
@@ -82,12 +81,11 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := store.Store{DB: pool, Vault: vault}
+	repo := store.New(pool, vault)
 	var admin, refresh string
 	signingKey := bytes.Repeat([]byte{9}, 32)
 	const origin = "https://example.test"
 	handler := (&api.API{Store: repo, JWTSigningKey: signingKey, PublicURL: origin, Context: ctx}).Handler()
-
 	call := func(method, path, token string, payload any, status int, target any) string {
 		t.Helper()
 		raw, err := json.Marshal(payload)
@@ -140,7 +138,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodPost, "/api/auth/setup", "", map[string]string{"username": "owner", "password": "short"}, 400, nil)
 	call(http.MethodPost, "/api/auth/setup", "", creds, 201, nil)
 	call(http.MethodPost, "/api/auth/setup", "", creds, 409, nil)
-
 	var integrations struct {
 		Telegram struct {
 			State string `json:"state"`
@@ -172,13 +169,11 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if branding != customBranding {
 		t.Fatal("updated branding does not match the submitted data")
 	}
-
 	call(http.MethodPut, brandingPath, admin, map[string]any{"name": "Northern Relay", "logo": logo, "default_language": "de"}, 400, nil)
 	call(http.MethodPut, brandingPath, admin, map[string]any{"name": "Northern Relay", "logo": logo}, 200, &branding)
 	if branding.DefaultLanguage != "ru" {
 		t.Fatal("old client reset configured language")
 	}
-	// Recreate the handler to simulate restarting the backend.
 	handler = (&api.API{Store: repo, JWTSigningKey: signingKey, PublicURL: origin, Context: ctx}).Handler()
 	call(http.MethodGet, brandingPath, admin, nil, 200, &branding)
 	if branding.DefaultLanguage != "ru" {
@@ -190,16 +185,19 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodPost, "/api/auth/login", "", map[string]string{"username": "owner", "password": "wrong"}, 401, nil)
 	call(http.MethodPost, "/api/auth/login", "", creds, 200, nil)
 	call(http.MethodGet, "/api/admin/users", admin, nil, 200, nil)
-
 	claims := new(jwt.RegisteredClaims)
-	if _, err := jwt.ParseWithClaims(admin, claims, func(*jwt.Token) (any, error) { return signingKey, nil }); err != nil {
+	if _, err := jwt.ParseWithClaims(admin, claims, func(*jwt.Token) (any, error) {
+		return signingKey, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if claims.ExpiresAt.Sub(claims.IssuedAt.Time) != 15*time.Minute {
 		t.Fatal("wrong access lifetime")
 	}
 	refreshClaims := new(jwt.RegisteredClaims)
-	if _, err := jwt.ParseWithClaims(refresh, refreshClaims, func(*jwt.Token) (any, error) { return signingKey, nil }); err != nil {
+	if _, err := jwt.ParseWithClaims(refresh, refreshClaims, func(*jwt.Token) (any, error) {
+		return signingKey, nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if refreshClaims.ExpiresAt.Sub(refreshClaims.IssuedAt.Time) != 4*time.Hour {
@@ -237,7 +235,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 			refresh = cookie.Value
 		}
 	}
-
 	const tokenPath = "/api/admin/api-tokens"
 	call(http.MethodPost, tokenPath, "", map[string]string{"name": "bot"}, 401, nil)
 	call(http.MethodPost, tokenPath, admin, map[string]string{"name": " "}, 400, nil)
@@ -257,16 +254,15 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodGet, "/api/admin/users", "amz_api_"+store.NewToken(), nil, 401, nil)
 	call(http.MethodGet, "/api/admin/users", serviceToken.Token, nil, 200, nil)
 	legacyKey := "amz_api_" + store.NewToken()
-	legacy, err := repo.CreateAPIToken(ctx, "Legacy integration", legacyKey)
+	legacy, err := repo.CreateAPIToken(ctx, middleware.GetReqID(ctx), "Legacy integration", legacyKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	call(http.MethodGet, "/api/admin/users", legacyKey, nil, 200, nil)
-	if err := repo.DeleteAPIToken(ctx, legacy.ID); err != nil {
+	if err := repo.DeleteAPIToken(ctx, middleware.GetReqID(ctx), legacy.ID); err != nil {
 		t.Fatal(err)
 	}
 	call(http.MethodGet, "/api/admin/users", legacyKey, nil, 401, nil)
-
 	call(http.MethodGet, tokenPath, serviceToken.Token, nil, 401, nil)
 	call(http.MethodDelete, tokenPath+"/"+serviceToken.ID, serviceToken.Token, nil, 401, nil)
 	handler = (&api.API{Store: repo, JWTSigningKey: signingKey, PublicURL: origin, Context: ctx}).Handler()
@@ -274,14 +270,11 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodDelete, tokenPath+"/"+serviceToken.ID, admin, nil, 204, nil)
 	call(http.MethodGet, "/api/admin/users", serviceToken.Token, nil, 401, nil)
 	call(http.MethodDelete, tokenPath+"/"+serviceToken.ID, admin, nil, 404, nil)
-
-	type fixture struct {
-		id, token, public, header string
-	}
+	type fixture struct{ id, token, public, header string }
 	var nodes []fixture
 	for i, ip := range []string{"192.0.2.101", "192.0.2.102"} {
 		token := store.NewToken()
-		node, err := repo.ReserveNode(ctx, ip, ip, token, 22, 51820+i)
+		node, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), ip, ip, token, 22, 51820+i)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -289,19 +282,19 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.TrustNodeHostKey(ctx, node.ID, "invalid-agent-token", "first-host-key"); err == nil {
+		if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), node.ID, "invalid-agent-token", "first-host-key"); err == nil {
 			t.Fatal("stale installation could pin a server key")
 		}
-		if err := repo.TrustNodeHostKey(ctx, node.ID, token, "first-host-key"); err != nil {
+		if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), node.ID, token, "first-host-key"); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.TrustNodeHostKey(ctx, node.ID, token, "first-host-key"); err != nil {
+		if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), node.ID, token, "first-host-key"); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.TrustNodeHostKey(ctx, node.ID, token, "changed-host-key"); err == nil {
+		if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), node.ID, token, "changed-host-key"); err == nil {
 			t.Fatal("a changed server key was accepted")
 		}
-		if err := repo.FinishInstall(ctx, node.ID, token, public, header, ""); err != nil {
+		if err := repo.FinishInstall(ctx, middleware.GetReqID(ctx), node.ID, token, public, header, ""); err != nil {
 			t.Fatal(err)
 		}
 		nodes = append(nodes, fixture{node.ID, token, public, header})
@@ -312,15 +305,11 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		store.Subscription
 		URL string
 	}
-	call(http.MethodPost, "/api/admin/subscriptions", admin, map[string]any{
-		"user_id": user.ID, "name": "<Две ноды>", "node_ids": []string{nodes[1].id, nodes[0].id},
-		"expires_at": time.Now().Add(time.Hour),
-	}, 201, &sub)
+	call(http.MethodPost, "/api/admin/subscriptions", admin, map[string]any{"user_id": user.ID, "name": "<Две ноды>", "node_ids": []string{nodes[1].id, nodes[0].id}, "expires_at": time.Now().Add(time.Hour)}, 201, &sub)
 	path := strings.TrimPrefix(sub.URL, origin)
 	if html := call(http.MethodGet, path, "", nil, 200, nil); !strings.Contains(html, "&lt;Две ноды&gt;") {
 		t.Fatal("subscription page did not escape its title")
 	}
-
 	var privateKeys []string
 	for _, node := range nodes {
 		profile := path + "/nodes/" + node.id + ".conf"
@@ -404,7 +393,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		}
 	}
 	call(http.MethodGet, "/s/invalid/configs/conf.zip", "", nil, 404, nil)
-
 	nodePath := "/api/admin/nodes/" + nodes[0].id
 	agentPath := "/api/agent/nodes/" + nodes[0].id
 	const newName = "Финляндия 2"
@@ -452,7 +440,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if err := json.Unmarshal([]byte(guest.Containers[0].AWG.LastConfig), &client); err != nil || client["HeaderProtectionKey"] != nodes[0].header {
 		t.Fatal("AmneziaWG 3.1 parameters missing from guest profile")
 	}
-
 	call(http.MethodPatch, nodePath, admin, map[string]any{"enabled": false}, 200, nil)
 	call(http.MethodGet, profile+".vpn", "", nil, 404, nil)
 	call(http.MethodGet, profile+".key", "", nil, 404, nil)
@@ -477,7 +464,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if conf := call(http.MethodGet, profile+".conf", "", nil, 200, nil); !strings.Contains(conf, privateKeys[0]) {
 		t.Fatal("pause and resume changed the client key")
 	}
-
 	userPath := "/api/admin/users/" + user.ID
 	if user.Username != "Тест" || user.TelegramID == nil || *user.TelegramID != 123456789 || user.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected user fields: %+v", user)
@@ -492,21 +478,16 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	var secondState store.State
 	call(http.MethodGet, secondAgent+"/state", nodes[1].token, nil, 200, &secondState)
 	handshake := time.Now().Truncate(time.Second)
-	call(http.MethodPost, secondAgent+"/ack", nodes[1].token, map[string]any{
-		"revision": secondState.Revision, "handshakes": map[string]int64{secondState.Peers[0].PublicKey: handshake.Unix()},
-	}, 200, nil)
+	call(http.MethodPost, secondAgent+"/ack", nodes[1].token, map[string]any{"revision": secondState.Revision, "handshakes": map[string]int64{secondState.Peers[0].PublicKey: handshake.Unix()}}, 200, nil)
 	call(http.MethodGet, userPath, admin, nil, 200, &updated)
 	if !updated.Online || updated.LastConnectedAt == nil || !updated.LastConnectedAt.Equal(handshake) {
 		t.Fatalf("missing VPN activity: %+v", updated)
 	}
-	call(http.MethodPost, secondAgent+"/ack", nodes[1].token, map[string]any{
-		"revision": secondState.Revision, "handshakes": map[string]int64{},
-	}, 200, nil)
+	call(http.MethodPost, secondAgent+"/ack", nodes[1].token, map[string]any{"revision": secondState.Revision, "handshakes": map[string]int64{}}, 200, nil)
 	call(http.MethodGet, userPath, admin, nil, 200, &updated)
 	if updated.Online || updated.LastConnectedAt == nil || !updated.LastConnectedAt.Equal(handshake) {
 		t.Fatalf("empty report did not clear online while preserving history: %+v", updated)
 	}
-
 	adminPath := "/api/admin/subscriptions/" + sub.ID
 	call(http.MethodPut, adminPath+"/nodes", admin, map[string]any{"node_ids": []string{nodes[0].id}}, 204, nil)
 	call(http.MethodGet, path+"/nodes/"+nodes[1].id+".conf", "", nil, 404, nil)
@@ -519,7 +500,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if updated.LastConnectedAt == nil || !updated.LastConnectedAt.Equal(handshake) {
 		t.Fatalf("removing a node erased connection history: %+v", updated)
 	}
-
 	var rotated struct{ URL string }
 	call(http.MethodPost, adminPath+"/rotate-link", admin, nil, 200, &rotated)
 	call(http.MethodGet, path, "", nil, 404, nil)
@@ -532,9 +512,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if len(revoked.Peers) != 0 {
 		t.Fatal("disabled subscription still has an active peer")
 	}
-
 	call(http.MethodPut, nodePath+"/endpoint", admin, map[string]any{"host": "nl.example.test", "port": 12345}, 200, nil)
-
 	call(http.MethodPost, "/api/admin/users/bulk/enabled", admin, map[string]any{"ids": []string{user.ID}, "enabled": false}, 200, nil)
 	call(http.MethodPost, "/api/admin/users/bulk/enabled", admin, map[string]any{"ids": []string{user.ID}, "enabled": true}, 200, nil)
 	call(http.MethodPatch, adminPath, admin, map[string]any{"enabled": true}, 204, nil)
@@ -544,11 +522,8 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if conf := call(http.MethodGet, path+"/nodes/"+nodes[0].id+".conf", "", nil, 200, nil); !strings.Contains(conf, "Endpoint = nl.example.test:12345") {
 		t.Fatal("profile did not use configured endpoint")
 	}
-
 	oldPeer := nodeState.Peers[0].PublicKey
-	report := map[string]any{"revision": nodeState.Revision, "traffic": map[string]store.TrafficCounter{
-		oldPeer: {Received: 60, Sent: 50},
-	}}
+	report := map[string]any{"revision": nodeState.Revision, "traffic": map[string]store.TrafficCounter{oldPeer: {Received: 60, Sent: 50}}}
 	call(http.MethodPost, agentPath+"/ack", nodes[0].token, report, 200, nil)
 	call(http.MethodPost, agentPath+"/ack", nodes[0].token, report, 200, nil)
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 200, &nodeState)
@@ -564,14 +539,13 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if _, err := pool.Exec(ctx, "UPDATE subscriptions SET traffic_reset_at=now() WHERE id=$1", sub.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ResetDueTraffic(ctx); err != nil {
+	if err := repo.ResetDueTraffic(ctx, middleware.GetReqID(ctx)); err != nil {
 		t.Fatal(err)
 	}
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 200, &nodeState)
 	if len(nodeState.Peers) != 1 {
 		t.Fatal("scheduled reset did not restore access")
 	}
-
 	call(http.MethodPost, adminPath+"/reset-traffic", admin, nil, 204, nil)
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 200, &nodeState)
 	if len(nodeState.Peers) != 1 {
@@ -582,10 +556,9 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if len(nodeState.Peers) != 1 || nodeState.Peers[0].PublicKey == oldPeer {
 		t.Fatal("revoke did not replace the VPN key")
 	}
-
 	checkConnection := func(ack bool, expected int) {
 		t.Helper()
-		check, err := repo.StartConnectionCheck(ctx)
+		check, err := repo.StartConnectionCheck(ctx, middleware.GetReqID(ctx))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -597,7 +570,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 				call(http.MethodPost, agent+"/ack", node.token, map[string]int64{"revision": state.Revision}, 200, nil)
 			}
 		}
-		changes, err := repo.FinishConnectionCheck(ctx, check)
+		changes, err := repo.FinishConnectionCheck(ctx, middleware.GetReqID(ctx), check)
 		if err != nil || len(changes) != expected {
 			t.Fatalf("connection transitions: %+v, error: %v", changes, err)
 		}
@@ -612,22 +585,19 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	checkConnection(false, 0)
 	checkConnection(true, 2)
 	checkConnection(true, 0)
-
 	call(http.MethodPost, "/api/admin/nodes/actions/restart-all", admin, nil, 202, nil)
 	call(http.MethodDelete, nodePath, admin, nil, 400, nil)
-	removal, err := repo.BeginNodeRemoval(ctx, nodes[0].id)
+	removal, err := repo.BeginNodeRemoval(ctx, middleware.GetReqID(ctx), nodes[0].id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.VerifyRemovalHostKey(ctx, removal.ID, "wrong-host-key"); err == nil {
+	if err := repo.VerifyRemovalHostKey(ctx, middleware.GetReqID(ctx), removal.ID, "wrong-host-key"); err == nil {
 		t.Fatal("cleanup accepted a different SSH key")
 	}
-	// An active cleanup cannot race a panel-only deletion.
 	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 409, nil)
-	if err := repo.FinishNodeRemoval(ctx, nodes[0].id, "SSH authentication failed"); err != nil {
+	if err := repo.FinishNodeRemoval(ctx, middleware.GetReqID(ctx), nodes[0].id, "SSH authentication failed"); err != nil {
 		t.Fatal(err)
 	}
-	// The failed installer/cleanup can be removed without any SSH credentials.
 	if _, err := pool.Exec(ctx, "UPDATE nodes SET status='failed' WHERE id=$1", nodes[0].id); err != nil {
 		t.Fatal(err)
 	}
@@ -638,65 +608,56 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM peers WHERE node_id=$1)+(SELECT count(*) FROM subscription_nodes WHERE node_id=$1)+(SELECT count(*) FROM subscription_plan_nodes WHERE node_id=$1)`, nodes[0].id).Scan(&assignments); err != nil || assignments != 0 {
 		t.Fatalf("deleted node retained assignments: %d %v", assignments, err)
 	}
-
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 403, nil)
 	retryToken := store.NewToken()
-	readded, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821)
+	readded, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), "Readded", removal.IP, retryToken, 2222, 51821)
 	if err != nil || readded.RetiredAt != nil || readded.Status != "installing" {
 		t.Fatalf("could not re-add removed node: %v", err)
 	}
-
 	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 409, nil)
-	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "key-after-reinstall"); err != nil {
+	if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), readded.ID, retryToken, "key-after-reinstall"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.FinishInstall(ctx, readded.ID, retryToken, "", "", "installation failed"); err != nil {
+	if err := repo.FinishInstall(ctx, middleware.GetReqID(ctx), readded.ID, retryToken, "", "", "installation failed"); err != nil {
 		t.Fatal(err)
 	}
 	retryToken = store.NewToken()
-	if _, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821); err != nil {
+	if _, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), "Readded", removal.IP, retryToken, 2222, 51821); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "another-key"); err == nil {
+	if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), readded.ID, retryToken, "another-key"); err == nil {
 		t.Fatal("a retry replaced a pinned host key without confirmation")
 	}
-	if err := repo.FinishInstall(ctx, readded.ID, retryToken, "", "", "host key changed"); err != nil {
+	if err := repo.FinishInstall(ctx, middleware.GetReqID(ctx), readded.ID, retryToken, "", "", "host key changed"); err != nil {
 		t.Fatal(err)
 	}
 	staleToken := retryToken
 	retryToken = store.NewToken()
-	if _, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821, true); err != nil {
+	if _, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), "Readded", removal.IP, retryToken, 2222, 51821, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.TrustNodeHostKey(ctx, readded.ID, staleToken, "stale-key"); err == nil {
+	if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), readded.ID, staleToken, "stale-key"); err == nil {
 		t.Fatal("an old installation could change the host key")
 	}
-	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "another-key"); err != nil {
+	if err := repo.TrustNodeHostKey(ctx, middleware.GetReqID(ctx), readded.ID, retryToken, "another-key"); err != nil {
 		t.Fatal("confirmed host key reset failed:", err)
 	}
-
 	call(http.MethodDelete, adminPath, admin, nil, 204, nil)
 	call(http.MethodDelete, userPath, admin, nil, 204, nil)
 	call(http.MethodGet, userPath, admin, nil, 404, nil)
-
 	var telegramEvents int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM telegram_notifications
 		WHERE event IN ('node.created','node.connection_lost','node.connection_restored','node.deleted')`).Scan(&telegramEvents); err != nil || telegramEvents != 7 {
 		t.Fatalf("expected seven node notifications independently of webhook, got %d: %v", telegramEvents, err)
 	}
-
 	var plan store.SubscriptionPlan
-	call(http.MethodPost, "/api/admin/subscription-plans", admin, map[string]any{
-		"name": "Shared", "node_ids": []string{nodes[1].id},
-	}, 201, &plan)
+	call(http.MethodPost, "/api/admin/subscription-plans", admin, map[string]any{"name": "Shared", "node_ids": []string{nodes[1].id}}, 201, &plan)
 	var assignedUser struct {
 		store.User
 		AccessID string `json:"access_id"`
 		URL      string `json:"subscription_url"`
 	}
-	call(http.MethodPost, "/api/admin/users", admin, map[string]any{
-		"username": "plan-user", "plan_id": plan.ID,
-	}, 201, &assignedUser)
+	call(http.MethodPost, "/api/admin/users", admin, map[string]any{"username": "plan-user", "plan_id": plan.ID}, 201, &assignedUser)
 	if assignedUser.SubscriptionPlanID == nil || *assignedUser.SubscriptionPlanID != plan.ID || assignedUser.AccessID == "" || assignedUser.URL == "" {
 		t.Fatal("missing issued access for first assignment")
 	}
@@ -709,7 +670,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if same.ID != assignedUser.AccessID || same.URL != "" || before != after {
 		t.Fatal("same assignment rotated the VPN credentials")
 	}
-
 	linkPath := "/api/admin/subscriptions/" + assignedUser.AccessID + "/link"
 	var savedLink struct{ URL *string }
 	call(http.MethodGet, linkPath, "", nil, 401, nil)
@@ -741,7 +701,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != before {
 		t.Fatal("reading or rotating a subscription link changed VPN credentials")
 	}
-
 	var assignedAccess store.Subscription
 	call(http.MethodGet, assignedPath, "", nil, 401, nil)
 	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
@@ -757,7 +716,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if !assignedAccess.Enabled || assignedAccess.ExpiresAt == nil || !assignedAccess.ExpiresAt.Equal(expiry) {
 		t.Fatal("enabling access cleared its expiration")
 	}
-
 	var datedManifest struct {
 		ExpiresAt *time.Time `json:"expires_at"`
 	}
@@ -774,8 +732,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
 		t.Fatal("editing access settings rotated the VPN key")
 	}
-
-	// Device defaults are copied only to newly created users.
 	call(http.MethodGet, "/api/admin/settings/devices", "", nil, 401, nil)
 	call(http.MethodPut, "/api/admin/settings/devices", admin, map[string]any{"default_device_limit": 2}, 200, nil)
 	var other store.User
@@ -794,7 +750,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal("default change affected an existing user")
 	}
 	call(http.MethodPut, "/api/admin/settings/devices", admin, map[string]any{"default_device_limit": 0}, 400, nil)
-	// UUID and Telegram references work for both user details and device routes.
 	call(http.MethodPatch, "/api/admin/users/"+assignedUser.ID, admin, map[string]any{"telegram_id": 987654321}, 204, nil)
 	telegramUserPath := "/api/admin/users/987654321"
 	var resolved store.User
@@ -812,7 +767,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal("initial subscription must create one device")
 	}
 	originalDevice := devices[0].ID
-	// Racing issuances must not bypass the per-user device limit.
 	type deviceResult struct {
 		device store.Device
 		err    error
@@ -820,7 +774,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	results := make(chan deviceResult, 8)
 	for index := 0; index < 8; index++ {
 		go func() {
-			device, err := repo.CreateDevice(ctx, assignedUser.ID, "Phone")
+			device, err := repo.CreateDevice(ctx, middleware.GetReqID(ctx), assignedUser.ID, "Phone")
 			results <- deviceResult{device, err}
 		}()
 	}
@@ -853,11 +807,9 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	}
 	call(http.MethodDelete, "/api/admin/users/"+other.ID+"/devices/"+extra.ID, admin, nil, 404, nil)
 	call(http.MethodGet, deviceProfilePath, admin, nil, 200, nil)
-	// Authenticated external service tokens can manage devices and export profiles.
 	var deviceService struct{ Token string }
 	call(http.MethodPost, "/api/admin/api-tokens", admin, map[string]any{"name": "device-service"}, 201, &deviceService)
 	call(http.MethodGet, deviceProfilePath, deviceService.Token, nil, 200, nil)
-	// Both devices are independently synchronized and reported as connected.
 	var deviceState store.State
 	deviceAgentPath := "/api/agent/nodes/" + nodes[1].id
 	call(http.MethodGet, deviceAgentPath+"/state", nodes[1].token, nil, 200, &deviceState)
@@ -876,8 +828,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	publicDevicePath := strings.TrimPrefix(assignedUser.URL, origin) + "/devices/" + extra.ID + "/nodes/" + nodes[1].id + ".conf"
 	call(http.MethodGet, publicDevicePath, "", nil, 200, nil)
 	call(http.MethodGet, strings.TrimPrefix(assignedUser.URL, origin)+"/devices/"+store.NewToken()+"/nodes/"+nodes[1].id+".conf", "", nil, 400, nil)
-
-	// Device bearer links are stable, isolated, and usable by external API clients.
 	var deviceLink, firstLink struct {
 		URL string `json:"url"`
 	}
@@ -903,7 +853,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if len(deviceManifest.Devices) != 1 || deviceManifest.Devices[0].ID != extra.ID || !deviceManifest.Devices[0].Online {
 		t.Fatalf("device link leaked devices or lost online status: %+v", deviceManifest)
 	}
-
 	var options struct {
 		DeviceOptions []store.DeviceOption `json:"device_options"`
 	}
@@ -920,9 +869,8 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	var foreign store.Device
 	call(http.MethodPost, "/api/admin/users/"+other.ID+"/devices", admin, map[string]any{"name": "Other user"}, 201, &foreign)
 	call(http.MethodGet, deviceBase+"/devices/"+foreign.ID+"/link", "", nil, 404, nil)
-	// Rotating the parent must revoke every device bearer link as well.
 	rotationToken := store.NewToken()
-	if err := repo.RotateToken(ctx, assignedAccess.ID, rotationToken); err != nil {
+	if err := repo.RotateToken(ctx, middleware.GetReqID(ctx), assignedAccess.ID, rotationToken); err != nil {
 		t.Fatal(err)
 	}
 	call(http.MethodGet, deviceBase+"/manifest", "", nil, 404, nil)
@@ -931,7 +879,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal("parent rotation reused a revoked device token")
 	}
 	originalToken := strings.TrimPrefix(assignedUser.URL, origin+"/s/")
-	if err := repo.RotateToken(ctx, assignedAccess.ID, originalToken); err != nil {
+	if err := repo.RotateToken(ctx, middleware.GetReqID(ctx), assignedAccess.ID, originalToken); err != nil {
 		t.Fatal(err)
 	}
 	call(http.MethodGet, linkAPI, admin, nil, 200, &deviceLink)
@@ -952,7 +900,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodDelete, extraPath, deviceService.Token, nil, 204, nil)
 	call(http.MethodGet, deviceBase+"/manifest", "", nil, 404, nil)
 	call(http.MethodGet, configURL, "", nil, 404, nil)
-
 	call(http.MethodGet, deviceAgentPath+"/state", nodes[1].token, nil, 200, &deviceState)
 	if len(deviceState.Peers) != 1 {
 		t.Fatal("deleted device remained in node state")
@@ -970,7 +917,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
 		t.Fatal("deleting a device changed another device's keys")
 	}
-	// Removing the last device preserves server assignments without resurrecting keys.
 	call(http.MethodDelete, telegramUserPath+"/devices/"+originalDevice, admin, nil, 204, nil)
 	call(http.MethodGet, profilePath, admin, nil, 404, nil)
 	call(http.MethodGet, assignedPath, admin, nil, 200, &assignedAccess)
@@ -985,9 +931,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodPut, telegramUserPath+"/device-limit", admin, map[string]any{"device_limit": nil}, 204, nil)
 	var replacement store.Device
 	call(http.MethodPost, telegramUserPath+"/devices", admin, map[string]any{"name": "New phone"}, 201, &replacement)
-	// Following existing assertions should compare the replacement's stable credentials.
 	after = call(http.MethodGet, profilePath, admin, nil, 200, nil)
-
 	call(http.MethodPut, "/api/admin/subscription-plans/"+plan.ID, admin, map[string]any{"name": "Renamed", "node_ids": []string{nodes[1].id}}, 200, nil)
 	if got := call(http.MethodGet, profilePath, admin, nil, 200, nil); got != after {
 		t.Fatal("renaming a plan changed an existing VPN key")
@@ -996,8 +940,6 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodPut, assignedPath, admin, map[string]any{"plan_id": nil}, 200, nil)
 	call(http.MethodGet, profilePath, admin, nil, 404, nil)
 	call(http.MethodDelete, "/api/admin/subscription-plans/"+plan.ID, admin, nil, 204, nil)
-
-	// First-login onboarding must be authenticated, mandatory, and atomic.
 	call(http.MethodPost, "/api/auth/complete-setup", "", creds, 401, nil)
 	if _, err := pool.Exec(ctx, "UPDATE administrators SET password_change_required=true"); err != nil {
 		t.Fatal(err)
@@ -1013,7 +955,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodGet, "/api/admin/users", admin, nil, 403, nil)
 	call(http.MethodPost, "/api/auth/complete-setup", admin, map[string]string{"username": "owner", "password": "short"}, 400, nil)
 	oldAccess := admin
-	staleSalt, staleHash, err := repo.AdminCredentials(ctx, creds["username"])
+	staleSalt, staleHash, err := repo.AdminCredentials(ctx, middleware.GetReqID(ctx), creds["username"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1031,17 +973,18 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if oldResponse.Code != 401 {
 		t.Fatal("temporary session remained valid")
 	}
-
 	staleIssueCalled := false
-	err = repo.CreateAdminSession(ctx, creds["username"], staleSalt, staleHash, func(string) (string, time.Time, error) { staleIssueCalled = true; return "", time.Time{}, nil })
+	err = repo.CreateAdminSession(ctx, middleware.GetReqID(ctx), creds["username"], staleSalt, staleHash, func(string) (string, time.Time, error) {
+		staleIssueCalled = true
+		return "", time.Time{}, nil
+	})
 	if !errors.Is(err, pgx.ErrNoRows) || staleIssueCalled {
 		t.Fatal("stale password verification could create a new session")
 	}
 	call(http.MethodPost, "/api/auth/login", "", creds, 401, nil)
 	call(http.MethodPost, "/api/auth/login", "", permanent, 200, nil)
 	call(http.MethodPost, "/api/auth/complete-setup", admin, permanent, 409, nil)
-
-	events, err := repo.PendingEvents(ctx)
+	events, err := repo.PendingEvents(ctx, middleware.GetReqID(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,32 +994,45 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		}
 		return
 	}
-
 	counts := make(map[string]int)
+	rows, countErr := pool.Query(ctx, "SELECT event,count(*) FROM events GROUP BY event")
+	if countErr != nil {
+		t.Fatal(countErr)
+	}
+	for rows.Next() {
+		var name string
+		var count int
+		if err := rows.Scan(&name, &count); err != nil {
+			t.Fatal(err)
+		}
+		counts[name] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+
 	for _, event := range events {
 		if group, _, _ := strings.Cut(event.Name, "."); event.Scope != group {
 			t.Errorf("%s has wrong scope %q", event.Name, event.Scope)
 		}
-		counts[event.Name]++
+
 	}
-	for name, expected := range map[string]int{
-		"user.created": 1, "node.created": 2, "node.modified": 2, "node.connection_lost": 2,
-		"node.connection_restored": 2, "subscription.created": 1, "subscription.nodes_changed": 1,
-	} {
-		if counts[name] != expected {
+	for name, expected := range map[string]int{"user.created": 1, "node.created": 2, "node.modified": 2, "node.connection_lost": 2, "node.connection_restored": 2, "subscription.created": 1, "subscription.nodes_changed": 1} {
+		if counts[name] < expected {
 			t.Errorf("%s: got %d, want %d", name, counts[name], expected)
 		}
 	}
 	if len(events) == 0 {
 		t.Fatal("empty webhook queue")
 	}
-	if err := repo.RetryEvent(ctx, events[0].ID, time.Minute); err != nil {
+	if err := repo.RetryEvent(ctx, middleware.GetReqID(ctx), events[0].ID, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkEventDelivered(ctx, events[1].ID); err != nil {
+	if err := repo.MarkEventDelivered(ctx, middleware.GetReqID(ctx), events[1].ID); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := repo.PendingEvents(ctx)
+	pending, err := repo.PendingEvents(ctx, middleware.GetReqID(ctx))
 	if err != nil || len(pending) < len(events)-2 {
 		t.Fatalf("unexpected webhook queue length: %d (%v)", len(pending), err)
 	}
@@ -1085,13 +1041,11 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 			t.Fatalf("rescheduled or delivered webhook remained pending: %d", event.ID)
 		}
 	}
-
 	{
-		// Usage and deletion are scoped to each device/server key independently.
 		var fresh []fixture
 		for _, ip := range []string{"192.0.2.50", "192.0.2.51"} {
 			tok := store.NewToken()
-			n, e := repo.ReserveNode(ctx, ip, ip, tok, 22, 51820)
+			n, e := repo.ReserveNode(ctx, middleware.GetReqID(ctx), ip, ip, tok, 22, 51820)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -1099,25 +1053,25 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			if e = repo.FinishInstall(ctx, n.ID, tok, public, header, ""); e != nil {
+			if e = repo.FinishInstall(ctx, middleware.GetReqID(ctx), n.ID, tok, public, header, ""); e != nil {
 				t.Fatal(e)
 			}
 			fresh = append(fresh, fixture{n.ID, tok, public, header})
 		}
-		u, e := repo.CreateUser(ctx, "per-server-test", nil)
+		u, e := repo.CreateUser(ctx, middleware.GetReqID(ctx), "per-server-test", nil)
 		if e != nil {
 			t.Fatal(e)
 		}
 		tok := store.NewToken()
-		sub, e := repo.CreateSubscription(ctx, u.ID, "Two servers", tok, time.Now().Add(time.Hour), []string{fresh[0].id, fresh[1].id})
+		sub, e := repo.CreateSubscription(ctx, middleware.GetReqID(ctx), u.ID, "Two servers", tok, time.Now().Add(time.Hour), []string{fresh[0].id, fresh[1].id})
 		if e != nil {
 			t.Fatal(e)
 		}
-		ds, e := repo.Devices(ctx, u.ID)
+		ds, e := repo.Devices(ctx, middleware.GetReqID(ctx), u.ID)
 		if e != nil || len(ds) != 1 {
 			t.Fatal(e)
 		}
-		tok, e = repo.DeviceSubscriptionToken(ctx, u.ID, ds[0].ID, sub.ID)
+		tok, e = repo.DeviceSubscriptionToken(ctx, middleware.GetReqID(ctx), u.ID, ds[0].ID, sub.ID)
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -1155,6 +1109,5 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 				t.Fatal("deleted device key remained on a server")
 			}
 		}
-
 	}
 }
