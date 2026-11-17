@@ -65,19 +65,19 @@ func HashToken(token string) []byte {
 	return hash[:]
 }
 
-func (s Store) ReserveNode(ctx context.Context, name, ip, token string, sshPort, vpnPort int) (Node, error) {
+func (s Store) ReserveNode(ctx context.Context, name, ip, token string, sshPort, vpnPort int, resetHostKey ...bool) (Node, error) {
 	return scanNode(s.DB.QueryRow(ctx, `INSERT INTO nodes(name,ip,host_key,agent_token_hash,ssh_port,vpn_port,operation_stage)
 		VALUES($1,$2,'',$3,$4,$5,'queued') ON CONFLICT(ip) DO UPDATE
 		SET name=EXCLUDED.name, agent_token_hash=EXCLUDED.agent_token_hash, status='installing',error=NULL,operation_stage='queued',
 		    retired_at=NULL,enabled=true,ssh_port=EXCLUDED.ssh_port,vpn_port=EXCLUDED.vpn_port,
-		    host_key=CASE WHEN nodes.operation_stage='removed' THEN '' ELSE nodes.host_key END,
+		    host_key=CASE WHEN nodes.operation_stage='removed' OR $6 THEN '' ELSE nodes.host_key END,
 		    endpoint_host=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_host END,
 		    endpoint_port=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_port END,
 		    last_seen_at=NULL,handshakes_reported_at=NULL,connection_ok=NULL,connection_checked_at=NULL,applied_revision=0,revision=nodes.revision+1
 		WHERE nodes.operation_stage<>'removing' AND
 		    (nodes.retired_at IS NOT NULL OR (nodes.status='failed'
 		     AND nodes.vpn_port=EXCLUDED.vpn_port AND nodes.ssh_port=EXCLUDED.ssh_port))
-		RETURNING `+nodeColumns, name, ip, HashToken(token), sshPort, vpnPort))
+		RETURNING `+nodeColumns, name, ip, HashToken(token), sshPort, vpnPort, len(resetHostKey) > 0 && resetHostKey[0]))
 }
 
 // TrustNodeHostKey pins the first server key atomically and never replaces a known key.

@@ -613,13 +613,57 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if err := repo.VerifyRemovalHostKey(ctx, removal.ID, "wrong-host-key"); err == nil {
 		t.Fatal("cleanup accepted a different SSH key")
 	}
-	if err := repo.FinishNodeRemoval(ctx, nodes[0].id, ""); err != nil {
+	// An active cleanup cannot race a panel-only deletion.
+	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 409, nil)
+	if err := repo.FinishNodeRemoval(ctx, nodes[0].id, "SSH authentication failed"); err != nil {
 		t.Fatal(err)
 	}
+	// The failed installer/cleanup can be removed without any SSH credentials.
+	if _, err := pool.Exec(ctx, "UPDATE nodes SET status='failed' WHERE id=$1", nodes[0].id); err != nil {
+		t.Fatal(err)
+	}
+	call(http.MethodDelete, nodePath, "", map[string]any{"cleanup": false}, 401, nil)
+	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 204, nil)
+	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 409, nil)
+	var assignments int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM peers WHERE node_id=$1)+(SELECT count(*) FROM subscription_nodes WHERE node_id=$1)+(SELECT count(*) FROM subscription_plan_nodes WHERE node_id=$1)`, nodes[0].id).Scan(&assignments); err != nil || assignments != 0 {
+		t.Fatalf("deleted node retained assignments: %d %v", assignments, err)
+	}
+
 	call(http.MethodGet, agentPath+"/state", nodes[0].token, nil, 403, nil)
-	readded, err := repo.ReserveNode(ctx, "Readded", removal.IP, store.NewToken(), 2222, 51821)
+	retryToken := store.NewToken()
+	readded, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821)
 	if err != nil || readded.RetiredAt != nil || readded.Status != "installing" {
 		t.Fatalf("could not re-add removed node: %v", err)
+	}
+
+	call(http.MethodDelete, nodePath, admin, map[string]any{"cleanup": false}, 409, nil)
+	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "key-after-reinstall"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishInstall(ctx, readded.ID, retryToken, "", "", "installation failed"); err != nil {
+		t.Fatal(err)
+	}
+	retryToken = store.NewToken()
+	if _, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "another-key"); err == nil {
+		t.Fatal("a retry replaced a pinned host key without confirmation")
+	}
+	if err := repo.FinishInstall(ctx, readded.ID, retryToken, "", "", "host key changed"); err != nil {
+		t.Fatal(err)
+	}
+	staleToken := retryToken
+	retryToken = store.NewToken()
+	if _, err := repo.ReserveNode(ctx, "Readded", removal.IP, retryToken, 2222, 51821, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.TrustNodeHostKey(ctx, readded.ID, staleToken, "stale-key"); err == nil {
+		t.Fatal("an old installation could change the host key")
+	}
+	if err := repo.TrustNodeHostKey(ctx, readded.ID, retryToken, "another-key"); err != nil {
+		t.Fatal("confirmed host key reset failed:", err)
 	}
 
 	call(http.MethodDelete, adminPath, admin, nil, 204, nil)

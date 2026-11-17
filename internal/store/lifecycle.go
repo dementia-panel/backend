@@ -115,29 +115,37 @@ func (s Store) FinishNodeRemoval(ctx context.Context, id, failure string) error 
 		_, err := s.DB.Exec(ctx, `UPDATE nodes SET operation_stage='remove_failed',error=$2 WHERE id=$1 AND operation_stage='removing'`, id, failure)
 		return err
 	}
-	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT s.id FROM subscriptions s JOIN peers p ON p.subscription_id=s.id
-			WHERE p.node_id=$1 ORDER BY s.id FOR UPDATE OF s`, id); err != nil {
-			return err
-		}
-		var name string
-		if err := tx.QueryRow(ctx, `UPDATE nodes SET retired_at=now(),enabled=false,operation_stage='removed',revision=revision+1
-			WHERE id=$1 AND operation_stage='removing' RETURNING name`, id).Scan(&name); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `WITH removed AS (DELETE FROM peers WHERE node_id=$1 RETURNING subscription_id,last_handshake_at)
+	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error { return removeNodeData(ctx, tx, id, false) })
+}
+
+// ForgetNode removes panel assignments without opening an SSH connection.
+func (s Store) ForgetNode(ctx context.Context, id string) error {
+	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error { return removeNodeData(ctx, tx, id, true) })
+}
+
+func removeNodeData(ctx context.Context, tx pgx.Tx, id string, localOnly bool) error {
+	if _, err := tx.Exec(ctx, `SELECT s.id FROM subscriptions s WHERE EXISTS (
+            SELECT 1 FROM subscription_nodes sn WHERE sn.subscription_id=s.id AND sn.node_id=$1)
+            ORDER BY s.id FOR UPDATE`, id); err != nil {
+		return err
+	}
+	var name string
+	if err := tx.QueryRow(ctx, `UPDATE nodes SET retired_at=now(),enabled=false,operation_stage='removed',error=NULL,revision=revision+1
+			WHERE id=$1 AND retired_at IS NULL AND (($2 AND status<>'installing' AND operation_stage<>'removing') OR (NOT $2 AND operation_stage='removing')) RETURNING name`, id, localOnly).Scan(&name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `WITH removed AS (DELETE FROM peers WHERE node_id=$1 RETURNING subscription_id,last_handshake_at)
 				UPDATE subscriptions s SET removed_peer_last_handshake_at=greatest(s.removed_peer_last_handshake_at,r.last_handshake_at)
 				FROM (SELECT subscription_id,max(last_handshake_at) AS last_handshake_at FROM removed GROUP BY subscription_id) r WHERE s.id=r.subscription_id`, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM subscription_plan_nodes WHERE node_id=$1`, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM subscription_nodes WHERE node_id=$1`, id); err != nil {
-			return err
-		}
-		return recordDeletion(ctx, tx, "node", id, name)
-	})
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM subscription_plan_nodes WHERE node_id=$1`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM subscription_nodes WHERE node_id=$1`, id); err != nil {
+		return err
+	}
+	return recordDeletion(ctx, tx, "node", id, name)
 }
 
 func (s Store) RestartAllNodes(ctx context.Context) (int64, error) {

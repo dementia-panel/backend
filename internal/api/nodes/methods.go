@@ -43,12 +43,13 @@ func (h *Handler) node(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name     string `json:"name"`
-		IP       string `json:"ip"`
-		Login    string `json:"login"`
-		Password string `json:"password"`
-		SSHPort  int    `json:"ssh_port"`
-		VPNPort  int    `json:"vpn_port"`
+		Name         string `json:"name"`
+		IP           string `json:"ip"`
+		Login        string `json:"login"`
+		Password     string `json:"password"`
+		SSHPort      int    `json:"ssh_port"`
+		VPNPort      int    `json:"vpn_port"`
+		ResetHostKey bool   `json:"reset_host_key"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
@@ -75,7 +76,7 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := store.NewToken()
-	n, err := h.store.ReserveNode(r.Context(), req.Name, ip.Unmap().String(), token, req.SSHPort, req.VPNPort)
+	n, err := h.store.ReserveNode(r.Context(), req.Name, ip.Unmap().String(), token, req.SSHPort, req.VPNPort, req.ResetHostKey)
 	if err != nil {
 		<-h.installSlots
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -227,8 +228,21 @@ func (h *Handler) retireNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Login    string `json:"login"`
 		Password string `json:"password"`
+		Cleanup  *bool  `json:"cleanup"`
 	}
 	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	if req.Cleanup != nil && !*req.Cleanup {
+		if err := h.store.ForgetNode(r.Context(), id); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				httpx.Failure(w, http.StatusConflict, "node is unavailable or busy")
+				return
+			}
+			httpx.HandleError(w, err)
+			return
+		}
+		httpx.Respond(w, http.StatusNoContent, nil)
 		return
 	}
 	if !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") {

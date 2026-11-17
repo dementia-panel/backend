@@ -129,48 +129,67 @@ func TestInstallRequiresHostKeyVerifier(t *testing.T) {
 	}
 }
 
-func TestRejectedHostKeyNeverSendsPassword(t *testing.T) {
-	if os.Getenv("TEST_DATABASE_URL") == "" {
-		t.Skip("integration tests are disabled")
-	}
-	_, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := ssh.NewSignerFromKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var authenticated atomic.Bool
-	config := &ssh.ServerConfig{PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) { authenticated.Store(true); return nil, nil }}
-	config.AddHostKey(signer)
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(5 * time.Second))
-		server, _, _, err := ssh.NewServerConn(conn, config)
-		if err == nil {
-			server.Close()
-		}
-	}()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	_, _, err = Install(ctx, Request{IP: "127.0.0.1", Login: "root", Password: "must-not-be-transmitted", SSHPort: listener.Addr().(*net.TCPAddr).Port, VerifyHostKey: func(context.Context, string) error { return errors.New("changed key") }})
-	if err == nil {
-		t.Fatal("changed server key must be rejected")
-	}
-	<-done
-	if authenticated.Load() {
-		t.Fatal("password was sent before server identity verification")
+func TestSSHFailureClassification(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		rejectKey bool
+		message   string
+	}{
+		{"changed_host_key", true, "SSH server key verification failed"},
+		{"invalid_password", false, "SSH authentication failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if os.Getenv("TEST_DATABASE_URL") == "" {
+				t.Skip("integration tests are disabled")
+			}
+			_, key, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signer, err := ssh.NewSignerFromKey(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var authenticated atomic.Bool
+			config := &ssh.ServerConfig{PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+				authenticated.Store(true)
+				return nil, errors.New("password rejected")
+			}}
+			config.AddHostKey(signer)
+			listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
+				server, _, _, err := ssh.NewServerConn(conn, config)
+				if err == nil {
+					server.Close()
+				}
+			}()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			_, _, err = Install(ctx, Request{IP: "127.0.0.1", Login: "root", Password: "must-not-be-transmitted", SSHPort: listener.Addr().(*net.TCPAddr).Port, VerifyHostKey: func(context.Context, string) error {
+				if test.rejectKey {
+					return errors.New("changed key")
+				}
+				return nil
+			}})
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("wrong SSH failure classification: %v", err)
+			}
+			<-done
+			if authenticated.Load() == test.rejectKey {
+				t.Fatal("SSH authentication ran at the wrong phase")
+			}
+		})
 	}
 }

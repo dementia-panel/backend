@@ -110,17 +110,27 @@ func runSSH(ctx context.Context, req Request, payload string, stdout, stderr io.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 
+	var hostKeyErr error
+	hostKeyVerified := false
 	clientConfig := &ssh.ClientConfig{
 		User:              req.Login,
 		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519},
 		Auth:              []ssh.AuthMethod{ssh.Password(req.Password)},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			return req.VerifyHostKey(ctx, ssh.FingerprintSHA256(key))
+			hostKeyErr = req.VerifyHostKey(ctx, ssh.FingerprintSHA256(key))
+			hostKeyVerified = hostKeyErr == nil
+			return hostKeyErr
 		},
 	}
 	sshConn, channels, requests, err := ssh.NewClientConn(conn, address, clientConfig)
 	if err != nil {
-		return errors.New("SSH authentication or host key verification failed")
+		if hostKeyErr != nil {
+			return errors.New("SSH server key verification failed")
+		}
+		if !hostKeyVerified {
+			return errors.New("SSH handshake failed")
+		}
+		return errors.New("SSH authentication failed")
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return errors.New("could not clear SSH handshake timeout")
