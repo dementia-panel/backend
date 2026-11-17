@@ -4,6 +4,7 @@ import (
 	"context"
 	"dementia/backend/internal/lib/logger/with"
 	. "dementia/backend/internal/storage/shared"
+	"errors"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -78,4 +79,41 @@ func (s Repository) UpdateUser(ctx context.Context, requestID string, id string,
 		}
 		return BumpNodes(ctx, requestID, tx, `SELECT p.node_id FROM peers p JOIN subscriptions s ON s.id=p.subscription_id WHERE s.user_id=$1`, id)
 	})
+}
+
+func (s Repository) UsersPage(ctx context.Context, requestID string, query UserQuery) (UserPage, error) {
+	const op = "internal/storage/users/UsersPage"
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(ctx, "listing users")
+	result := UserPage{Items: []User{}, Page: query.Page, PerPage: query.PerPage}
+	if query.Page < 1 || query.Page > 1000000000 || query.PerPage < 1 || query.PerPage > 100 {
+		return result, errors.New("invalid pagination")
+	}
+	order := "username,id"
+	switch query.Sort {
+	case "", "username":
+	case "last_connected_at":
+		order = "last_connected_at DESC NULLS LAST,id"
+	default:
+		return result, errors.New("invalid user sort")
+	}
+	if query.Status != "all" && query.Status != "online" && query.Status != "disabled" {
+		return result, errors.New("invalid user status")
+	}
+	const filter = ` WHERE ($1='' OR strpos(lower(username),lower($1))>0 OR strpos(coalesce(telegram_id::text,''),$1)>0)
+ AND ($2='all' OR ($2='online' AND online) OR ($2='disabled' AND NOT enabled))`
+	source := " FROM (" + SelectUsers + ") listed" + filter
+	err := pgx.BeginTxFunc(ctx, s.DB, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE online)"+source, query.Search, query.Status).Scan(&result.Total, &result.OnlineTotal); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, "SELECT *"+source+" ORDER BY "+order+" LIMIT $3 OFFSET $4", query.Search, query.Status, query.PerPage, int64(query.Page-1)*int64(query.PerPage))
+		if err != nil {
+			return err
+		}
+		result.Items, err = pgx.AppendRows([]User{}, rows, func(row pgx.CollectableRow) (User, error) { return ScanUser(row) })
+		return err
+	})
+	result.TotalPages = (result.Total + int64(query.PerPage) - 1) / int64(query.PerPage)
+	return result, err
 }

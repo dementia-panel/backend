@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -17,7 +18,48 @@ func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
 	requestID := middleware.GetReqID(r.Context())
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.DebugContext(r.Context(), "handling request")
-	users, err := h.store.Users(r.Context(), requestID)
+	query := store.UserQuery{Page: 1, PerPage: 25, Status: "all", Sort: "username"}
+	params := r.URL.Query()
+	for _, param := range []struct {
+		name  string
+		value *int
+		max   int
+	}{{"page", &query.Page, 1000000000}, {"per_page", &query.PerPage, 100}} {
+		if values, ok := params[param.name]; ok {
+			if len(values) != 1 {
+				httpx.Failure(w, r, 400, "provide one value for "+param.name)
+				return
+			}
+			value, err := strconv.ParseUint(values[0], 10, 32)
+			if err != nil || value < 1 || value > uint64(param.max) {
+				httpx.Failure(w, r, 400, "invalid "+param.name)
+				return
+			}
+			*param.value = int(value)
+		}
+	}
+	if values, ok := params["search"]; ok {
+		if len(values) != 1 || len(values[0]) > 128 || strings.ContainsRune(values[0], 0) {
+			httpx.Failure(w, r, 400, "invalid search")
+			return
+		}
+		query.Search = strings.TrimSpace(values[0])
+	}
+	if values, ok := params["status"]; ok {
+		if len(values) != 1 || (values[0] != "all" && values[0] != "online" && values[0] != "disabled") {
+			httpx.Failure(w, r, 400, "invalid status")
+			return
+		}
+		query.Status = values[0]
+	}
+	if values, ok := params["sort"]; ok {
+		if len(values) != 1 || (values[0] != "username" && values[0] != "last_connected_at") {
+			httpx.Failure(w, r, 400, "invalid sort")
+			return
+		}
+		query.Sort = values[0]
+	}
+	users, err := h.store.UsersPage(r.Context(), requestID, query)
 	if err != nil {
 		httpx.HandleError(w, r, err)
 		return
@@ -55,16 +97,16 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	if !validUsername(req.Username) {
-		httpx.Failure(w, http.StatusBadRequest, "invalid username")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid username")
 		return
 	}
 	if req.TelegramID != nil && *req.TelegramID <= 0 {
-		httpx.Failure(w, http.StatusBadRequest, "telegram_id must be positive")
+		httpx.Failure(w, r, http.StatusBadRequest, "telegram_id must be positive")
 		return
 	}
 	if req.PlanID != nil {
 		if !httpx.ValidID(*req.PlanID) {
-			httpx.Failure(w, http.StatusBadRequest, "invalid plan ID")
+			httpx.Failure(w, r, http.StatusBadRequest, "invalid plan ID")
 			return
 		}
 		token := store.NewToken()
@@ -105,20 +147,20 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Username == nil && req.TelegramID == nil && req.Enabled == nil {
-		httpx.Failure(w, http.StatusBadRequest, "provide username, telegram_id or enabled")
+		httpx.Failure(w, r, http.StatusBadRequest, "provide username, telegram_id or enabled")
 		return
 	}
 	if req.Username != nil {
 		*req.Username = strings.TrimSpace(*req.Username)
 		if !validUsername(*req.Username) {
-			httpx.Failure(w, http.StatusBadRequest, "invalid username")
+			httpx.Failure(w, r, http.StatusBadRequest, "invalid username")
 			return
 		}
 	}
 	var telegramID *int64
 	if req.TelegramID != nil {
 		if err := json.Unmarshal(req.TelegramID, &telegramID); err != nil || (telegramID != nil && *telegramID <= 0) {
-			httpx.Failure(w, http.StatusBadRequest, "telegram_id must be a positive integer or null")
+			httpx.Failure(w, r, http.StatusBadRequest, "telegram_id must be a positive integer or null")
 			return
 		}
 	}
@@ -159,7 +201,7 @@ func (h *Handler) bulkEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Enabled == nil || len(req.IDs) == 0 || len(req.IDs) > 500 {
-		httpx.Failure(w, http.StatusBadRequest, "provide 1–500 user IDs and enabled")
+		httpx.Failure(w, r, http.StatusBadRequest, "provide 1–500 user IDs and enabled")
 		return
 	}
 	seen := make(map[string]bool, len(req.IDs))
@@ -170,7 +212,7 @@ func (h *Handler) bulkEnabled(w http.ResponseWriter, r *http.Request) {
 		}
 		req.IDs[index] = id
 		if seen[id] {
-			httpx.Failure(w, http.StatusBadRequest, "provide unique user IDs")
+			httpx.Failure(w, r, http.StatusBadRequest, "provide unique user IDs")
 			return
 		}
 		seen[id] = true

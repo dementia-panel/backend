@@ -76,13 +76,13 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 		req.VPNPort = 51820
 	}
 	if ipErr != nil || ip.Zone() != "" || !ip.IsGlobalUnicast() || !validNodeName(req.Name) || !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") || req.SSHPort < 1 || req.SSHPort > 65535 || req.VPNPort < 1 || req.VPNPort > 65535 {
-		httpx.Failure(w, 400, "invalid node settings")
+		httpx.Failure(w, r, 400, "invalid node settings")
 		return
 	}
 	select {
 	case h.installSlots <- struct{}{}:
 	default:
-		httpx.Failure(w, 429, "all installation workers are busy")
+		httpx.Failure(w, r, 429, "all installation workers are busy")
 		return
 	}
 	token := store.NewToken()
@@ -90,7 +90,7 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		<-h.installSlots
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.Failure(w, 409, "node already registered")
+			httpx.Failure(w, r, 409, "node already registered")
 			return
 		}
 		httpx.HandleError(w, r, err)
@@ -136,7 +136,7 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 		if err := h.store.FinishInstall(ctx, requestID, n.ID, token, "", "", "backend is shutting down"); err != nil {
 			log.Error("failed to cancel node installation", "node_id", n.ID, sl.Err(err))
 		}
-		httpx.Failure(w, http.StatusServiceUnavailable, "backend is shutting down")
+		httpx.Failure(w, r, http.StatusServiceUnavailable, "backend is shutting down")
 		return
 	}
 	httpx.Respond(w, 202, n)
@@ -163,13 +163,13 @@ func (h *Handler) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Name == nil && req.Enabled == nil {
-		httpx.Failure(w, 400, "provide name or enabled")
+		httpx.Failure(w, r, 400, "provide name or enabled")
 		return
 	}
 	if req.Name != nil {
 		*req.Name = strings.TrimSpace(*req.Name)
 		if !validNodeName(*req.Name) {
-			httpx.Failure(w, 400, "invalid node name")
+			httpx.Failure(w, r, 400, "invalid node name")
 			return
 		}
 	}
@@ -261,7 +261,7 @@ func (h *Handler) retireNode(w http.ResponseWriter, r *http.Request) {
 	if req.Cleanup != nil && !*req.Cleanup {
 		if err := h.store.ForgetNode(r.Context(), requestID, id); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				httpx.Failure(w, http.StatusConflict, "node is unavailable or busy")
+				httpx.Failure(w, r, http.StatusConflict, "node is unavailable or busy")
 				return
 			}
 			httpx.HandleError(w, r, err)
@@ -271,20 +271,20 @@ func (h *Handler) retireNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") {
-		httpx.Failure(w, http.StatusBadRequest, "invalid SSH credentials")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid SSH credentials")
 		return
 	}
 	select {
 	case h.installSlots <- struct{}{}:
 	default:
-		httpx.Failure(w, http.StatusTooManyRequests, "all installation workers are busy")
+		httpx.Failure(w, r, http.StatusTooManyRequests, "all installation workers are busy")
 		return
 	}
 	node, err := h.store.BeginNodeRemoval(r.Context(), requestID, id)
 	if err != nil {
 		<-h.installSlots
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.Failure(w, http.StatusConflict, "node is unavailable or busy")
+			httpx.Failure(w, r, http.StatusConflict, "node is unavailable or busy")
 			return
 		}
 		httpx.HandleError(w, r, err)
@@ -323,7 +323,7 @@ func (h *Handler) retireNode(w http.ResponseWriter, r *http.Request) {
 	}) {
 		<-h.installSlots
 		finish("backend is shutting down")
-		httpx.Failure(w, http.StatusServiceUnavailable, "backend is shutting down")
+		httpx.Failure(w, r, http.StatusServiceUnavailable, "backend is shutting down")
 		return
 	}
 	httpx.Respond(w, 202, node)
@@ -362,13 +362,13 @@ func (h *Handler) setEndpoint(w http.ResponseWriter, r *http.Request) {
 	if req.Host != nil {
 		host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(*req.Host), "."))
 		if !validEndpoint(host) {
-			httpx.Failure(w, http.StatusBadRequest, "host must be an IP address or DNS name")
+			httpx.Failure(w, r, http.StatusBadRequest, "host must be an IP address or DNS name")
 			return
 		}
 		req.Host = &host
 	}
 	if req.Port != nil && (*req.Port < 1 || *req.Port > 65535) {
-		httpx.Failure(w, http.StatusBadRequest, "invalid endpoint port")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid endpoint port")
 		return
 	}
 	node, err := h.store.SetNodeEndpoint(r.Context(), requestID, id, req.Host, req.Port)

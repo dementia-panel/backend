@@ -35,7 +35,7 @@ func AllowBearer(repo store.Store, requireSession func(http.Handler) http.Handle
 			token := httpx.Bearer(r)
 			validFormat := (strings.HasPrefix(token, tokenPrefix) && len(token) == len(tokenPrefix)+43) || (strings.HasPrefix(token, legacyTokenPrefix) && len(token) == len(legacyTokenPrefix)+43) || (strings.HasPrefix(token, previousTokenPrefix) && len(token) == len(previousTokenPrefix)+43)
 			if len(authorization) != 1 || !validFormat {
-				httpx.Failure(w, http.StatusUnauthorized, "invalid API token")
+				httpx.Failure(w, r, http.StatusUnauthorized, "invalid API token")
 				return
 			}
 			valid, err := repo.APITokenExists(r.Context(), middleware.GetReqID(r.Context()), token)
@@ -44,7 +44,7 @@ func AllowBearer(repo store.Store, requireSession func(http.Handler) http.Handle
 				return
 			}
 			if !valid {
-				httpx.Failure(w, http.StatusUnauthorized, "invalid API token")
+				httpx.Failure(w, r, http.StatusUnauthorized, "invalid API token")
 				return
 			}
 			next.ServeHTTP(w, r)

@@ -37,7 +37,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || len(name) > 128 || strings.ContainsFunc(name, unicode.IsControl) {
-		httpx.Failure(w, http.StatusBadRequest, "invalid API token name")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid API token name")
 		return
 	}
 	raw := tokenPrefix + store.NewToken()
@@ -83,7 +83,7 @@ func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || len(name) > 128 || strings.ContainsFunc(name, unicode.IsControl) {
-		httpx.Failure(w, 400, "invalid API token name")
+		httpx.Failure(w, r, 400, "invalid API token name")
 		return
 	}
 	token, err := h.store.RenameAPIToken(r.Context(), requestID, id, name)

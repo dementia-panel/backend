@@ -121,18 +121,18 @@ func (b *Bot) Webhook(w http.ResponseWriter, r *http.Request) {
 	expected := sha256.Sum256([]byte(b.config.WebhookSecret))
 	provided := sha256.Sum256([]byte(r.Header.Get("X-Telegram-Bot-Api-Secret-Token")))
 	if !b.WebhookEnabled() || subtle.ConstantTimeCompare(expected[:], provided[:]) != 1 {
-		httpx.Failure(w, http.StatusForbidden, "invalid Telegram webhook credentials")
+		httpx.Failure(w, r, http.StatusForbidden, "invalid Telegram webhook credentials")
 		return
 	}
 	var item update
 	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-		httpx.Failure(w, http.StatusBadRequest, "invalid Telegram update")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid Telegram update")
 		return
 	}
 	if err := b.handleUpdate(r.Context(), item); err != nil {
 		log.WarnContext(r.Context(), "Telegram command failed", sl.Err(err))
-		httpx.Failure(w, http.StatusServiceUnavailable, "Telegram command temporarily unavailable")
+		httpx.Failure(w, r, http.StatusServiceUnavailable, "Telegram command temporarily unavailable")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

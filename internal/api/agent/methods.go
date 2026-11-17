@@ -25,7 +25,7 @@ func (h *Handler) agentState(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := h.store.State(r.Context(), requestID, id, httpx.Bearer(r))
 	if errors.Is(err, pgx.ErrNoRows) {
-		httpx.Failure(w, 403, "invalid agent credentials")
+		httpx.Failure(w, r, 403, "invalid agent credentials")
 		return
 	}
 	if err != nil {
@@ -45,7 +45,7 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 	}
 	token := httpx.Bearer(r)
 	if len(token) != 43 {
-		httpx.Failure(w, http.StatusForbidden, "invalid agent credentials")
+		httpx.Failure(w, r, http.StatusForbidden, "invalid agent credentials")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -56,7 +56,7 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !valid {
-		httpx.Failure(w, http.StatusForbidden, "invalid agent credentials")
+		httpx.Failure(w, r, http.StatusForbidden, "invalid agent credentials")
 		return
 	}
 	select {
@@ -66,7 +66,7 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 		}()
 	default:
 		w.Header().Set("Retry-After", "1")
-		httpx.Failure(w, http.StatusTooManyRequests, "too many concurrent agent reports")
+		httpx.Failure(w, r, http.StatusTooManyRequests, "too many concurrent agent reports")
 		return
 	}
 	var req struct {
@@ -80,7 +80,7 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Revision < 1 || req.Restarted < 0 {
-		httpx.Failure(w, 400, "invalid revision")
+		httpx.Failure(w, r, 400, "invalid revision")
 		return
 	}
 	if err := h.store.Ack(ctx, requestID, id, token, req.Revision, req.Restarted, req.Handshakes, req.Traffic); err != nil {

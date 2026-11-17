@@ -25,7 +25,7 @@ func Requests(next http.Handler) http.Handler {
 		switch {
 		case status >= 500:
 			level = slog.LevelError
-		case status == 429:
+		case status >= http.StatusBadRequest:
 			level = slog.LevelWarn
 		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || (status < 400 && strings.HasPrefix(route, "/api/agent/")):
 			level = slog.LevelDebug

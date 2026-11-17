@@ -54,7 +54,7 @@ func (h *Handler) RequireSession(next http.Handler) http.Handler {
 				return
 			}
 			if required {
-				httpx.Failure(w, http.StatusForbidden, "password setup required")
+				httpx.Failure(w, r, http.StatusForbidden, "password setup required")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -65,7 +65,7 @@ func (h *Handler) checkOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && origin != "" && origin != h.origin {
-			httpx.Failure(w, http.StatusForbidden, "invalid origin")
+			httpx.Failure(w, r, http.StatusForbidden, "invalid origin")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -84,7 +84,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 			return h.lookupSession(w, r, id)
 		}
 		if !errors.Is(err, jwt.ErrTokenExpired) {
-			httpx.Failure(w, http.StatusUnauthorized, "invalid access token")
+			httpx.Failure(w, r, http.StatusUnauthorized, "invalid access token")
 			return "", false
 		}
 		accessSession = id
@@ -92,7 +92,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 	refresh := readToken(r, refreshCookie)
 	id, err := h.parseToken(refresh, "refresh")
 	if err != nil || (accessSession != "" && accessSession != id) {
-		httpx.Failure(w, http.StatusUnauthorized, "authentication required")
+		httpx.Failure(w, r, http.StatusUnauthorized, "authentication required")
 		return "", false
 	}
 	username, ok := h.lookupSession(w, r, id)
@@ -110,7 +110,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (string, 
 		return "", false
 	}
 	if !rotated {
-		httpx.Failure(w, http.StatusConflict, "refresh token is no longer current")
+		httpx.Failure(w, r, http.StatusConflict, "refresh token is no longer current")
 		return "", false
 	}
 	pair.writeCookies(w)
@@ -124,7 +124,7 @@ func (h *Handler) lookupSession(w http.ResponseWriter, r *http.Request, id strin
 	username, err := h.store.AdminSession(r.Context(), requestID, id)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		httpx.Failure(w, http.StatusUnauthorized, "authentication required")
+		httpx.Failure(w, r, http.StatusUnauthorized, "authentication required")
 	case err != nil:
 		httpx.HandleError(w, r, err)
 	default:

@@ -171,8 +171,8 @@ func ScanUser(row pgx.Row) (User, error) {
 }
 
 const SelectUsers = `SELECT u.id::text,u.username,u.telegram_id,u.enabled,u.created_at,u.updated_at,
-	activity.last_connected_at,coalesce(activity.online,false),u.subscription_plan_id::text,u.device_limit,
- (SELECT count(*) FROM user_devices d WHERE d.user_id=u.id),coalesce(activity.online_devices,0)
+	activity.last_connected_at,coalesce(activity.online,false) AS online,u.subscription_plan_id::text,u.device_limit,
+ (SELECT count(*) FROM user_devices d WHERE d.user_id=u.id) AS device_count,coalesce(activity.online_devices,0) AS online_device_count
 	FROM users u
 	CROSS JOIN LATERAL (
 		SELECT greatest(max(p.last_handshake_at),max(s.removed_peer_last_handshake_at)) AS last_connected_at,
@@ -356,4 +356,20 @@ func ScanAPIToken(row pgx.Row) (APIToken, error) {
 	var token APIToken
 	err := row.Scan(&token.ID, &token.Name, &token.CreatedAt)
 	return token, err
+}
+
+type UserQuery struct {
+	Page    int
+	PerPage int
+	Search  string
+	Status  string
+	Sort    string
+}
+type UserPage struct {
+	Items       []User `json:"items"`
+	Total       int64  `json:"total"`
+	OnlineTotal int64  `json:"online_total"`
+	Page        int    `json:"page"`
+	PerPage     int    `json:"per_page"`
+	TotalPages  int64  `json:"total_pages"`
 }

@@ -177,7 +177,7 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceID := chi.URLParam(r, "deviceID")
 	if deviceID != "" && !httpx.ValidID(deviceID) {
-		httpx.Failure(w, 400, "invalid device ID")
+		httpx.Failure(w, r, 400, "invalid device ID")
 		return
 	}
 	profile, err := h.store.Profile(r.Context(), requestID, chi.URLParam(r, "token"), id, deviceID)
@@ -215,7 +215,7 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 	}
 	deviceID := chi.URLParam(r, "deviceID")
 	if deviceID != "" && !httpx.ValidID(deviceID) {
-		httpx.Failure(w, 400, "invalid device ID")
+		httpx.Failure(w, r, 400, "invalid device ID")
 		return
 	}
 	profile, err := h.store.Profile(r.Context(), requestID, chi.URLParam(r, "token"), id, deviceID)
@@ -251,7 +251,7 @@ func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 	publicHeaders(w)
 	format := chi.URLParam(r, "format")
 	if format != "vpn" && format != "conf" {
-		httpx.Failure(w, http.StatusNotFound, "unknown config format")
+		httpx.Failure(w, r, http.StatusNotFound, "unknown config format")
 		return
 	}
 	profiles, err := h.store.PublicProfiles(r.Context(), requestID, chi.URLParam(r, "token"))
@@ -260,7 +260,7 @@ func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(profiles) == 0 {
-		httpx.Failure(w, http.StatusNotFound, "no available profiles")
+		httpx.Failure(w, r, http.StatusNotFound, "no available profiles")
 		return
 	}
 	var data bytes.Buffer
@@ -317,7 +317,7 @@ func (h *Handler) deviceLink(w http.ResponseWriter, r *http.Request) {
 	publicHeaders(w)
 	id := chi.URLParam(r, "deviceID")
 	if !httpx.ValidID(id) {
-		httpx.Failure(w, 400, "invalid device ID")
+		httpx.Failure(w, r, 400, "invalid device ID")
 		return
 	}
 	sub, _, err := h.store.PublicSubscription(r.Context(), requestID, chi.URLParam(r, "token"))

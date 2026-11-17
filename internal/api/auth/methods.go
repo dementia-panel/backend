@@ -47,7 +47,7 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if configured {
-		httpx.Failure(w, http.StatusConflict, "administrator is already configured")
+		httpx.Failure(w, r, http.StatusConflict, "administrator is already configured")
 		return
 	}
 	var req credentials
@@ -56,10 +56,10 @@ func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	if !usernamePattern.MatchString(req.Username) || len([]rune(req.Password)) < 12 || len(req.Password) > 1024 {
-		httpx.Failure(w, http.StatusBadRequest, "invalid username or password length")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid username or password length")
 		return
 	}
-	if !h.acquirePasswordSlot(w) {
+	if !h.acquirePasswordSlot(w, r) {
 		return
 	}
 	defer func() {
@@ -91,10 +91,10 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	if !usernamePattern.MatchString(req.Username) || len(req.Password) == 0 || len(req.Password) > 1024 {
-		httpx.Failure(w, http.StatusUnauthorized, "invalid username or password")
+		httpx.Failure(w, r, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	if !h.acquirePasswordSlot(w) {
+	if !h.acquirePasswordSlot(w, r) {
 		return
 	}
 	defer func() {
@@ -113,7 +113,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	matches := subtle.ConstantTimeCompare(passwordHash(req.Password, salt), hash) == 1
 	if !matches || err != nil {
-		httpx.Failure(w, http.StatusUnauthorized, "invalid username or password")
+		httpx.Failure(w, r, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
 	var pair tokenPair
@@ -124,7 +124,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.store.CreateAdminSession(r.Context(), requestID, req.Username, salt, hash, issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.Failure(w, http.StatusUnauthorized, "invalid username or password")
+			httpx.Failure(w, r, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
 		httpx.HandleError(w, r, err)
@@ -171,13 +171,13 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 func passwordHash(password string, salt []byte) []byte {
 	return argon2.IDKey([]byte(password), salt, 2, 19*1024, 1, 32)
 }
-func (h *Handler) acquirePasswordSlot(w http.ResponseWriter) bool {
+func (h *Handler) acquirePasswordSlot(w http.ResponseWriter, r *http.Request) bool {
 	select {
 	case h.passwordSlots <- struct{}{}:
 		return true
 	default:
 		w.Header().Set("Retry-After", "1")
-		httpx.Failure(w, http.StatusTooManyRequests, "too many authentication requests")
+		httpx.Failure(w, r, http.StatusTooManyRequests, "too many authentication requests")
 		return false
 	}
 }
@@ -189,12 +189,12 @@ func (h *Handler) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	if h.limiter != nil {
 		allowed, err := h.limiter.Allow(r.Context())
 		if err != nil {
-			httpx.Failure(w, http.StatusServiceUnavailable, "login temporarily unavailable")
+			httpx.Failure(w, r, http.StatusServiceUnavailable, "login temporarily unavailable")
 			return false
 		}
 		if !allowed {
 			w.Header().Set("Retry-After", "60")
-			httpx.Failure(w, http.StatusTooManyRequests, "too many login attempts")
+			httpx.Failure(w, r, http.StatusTooManyRequests, "too many login attempts")
 		}
 		return allowed
 	}
@@ -207,7 +207,7 @@ func (h *Handler) allowLogin(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if h.loginAttempts >= 20 {
 		w.Header().Set("Retry-After", "60")
-		httpx.Failure(w, http.StatusTooManyRequests, "too many login attempts")
+		httpx.Failure(w, r, http.StatusTooManyRequests, "too many login attempts")
 		return false
 	}
 	h.loginAttempts++
@@ -228,7 +228,7 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !required {
-		httpx.Failure(w, http.StatusConflict, "password setup is already complete")
+		httpx.Failure(w, r, http.StatusConflict, "password setup is already complete")
 		return
 	}
 	var req credentials
@@ -237,10 +237,10 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	if !usernamePattern.MatchString(req.Username) || len([]rune(req.Password)) < 12 || len(req.Password) > 1024 {
-		httpx.Failure(w, http.StatusBadRequest, "invalid username or password length")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid username or password length")
 		return
 	}
-	if !h.acquirePasswordSlot(w) {
+	if !h.acquirePasswordSlot(w, r) {
 		return
 	}
 	defer func() {

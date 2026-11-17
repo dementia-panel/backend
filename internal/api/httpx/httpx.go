@@ -39,7 +39,18 @@ func Respond(w http.ResponseWriter, status int, value any) {
 		_ = json.NewEncoder(w).Encode(value)
 	}
 }
-func Failure(w http.ResponseWriter, status int, message string) {
+func Failure(w http.ResponseWriter, r *http.Request, status int, message string) {
+	const op = "internal/api/httpx/Failure"
+	log := with.WithOpAndRequestID(slog.Default(), op, middleware.GetReqID(r.Context()))
+	level := slog.LevelWarn
+	if status >= http.StatusInternalServerError {
+		level = slog.LevelError
+	}
+	route := ""
+	if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+		route = routeContext.RoutePattern()
+	}
+	log.Log(r.Context(), level, "HTTP request rejected", "method", r.Method, "route", route, "status", status, sl.Err(errors.New(message)))
 	Respond(w, status, map[string]string{"error": message})
 }
 func HandleError(w http.ResponseWriter, r *http.Request, err error) {
@@ -48,16 +59,16 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		Failure(w, 404, "resource not found")
+		Failure(w, r, 404, "resource not found")
 	case errors.Is(err, store.ErrDeviceLimit), errors.Is(err, store.ErrAmbiguousUser), errors.Is(err, store.ErrNodeUnavailable), errors.Is(err, store.ErrAddressPoolFull):
-		Failure(w, 409, err.Error())
+		Failure(w, r, 409, err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014" || pgErr.Code == "40P01" || pgErr.Code == "40001"):
-		Failure(w, http.StatusServiceUnavailable, "database operation temporarily unavailable")
+		Failure(w, r, http.StatusServiceUnavailable, "database operation temporarily unavailable")
 	case errors.As(err, &pgErr) && pgErr.Code == "23505":
-		Failure(w, 409, "resource already exists")
+		Failure(w, r, 409, "resource already exists")
 	default:
 		log.ErrorContext(r.Context(), "request failed", sl.Err(err))
-		Failure(w, 500, "internal error")
+		Failure(w, r, 500, "internal error")
 	}
 }
 func ErrorType(err error) string {
@@ -83,7 +94,7 @@ func DecodeBody(w http.ResponseWriter, r *http.Request, value any) bool {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if d.Decode(value) != nil || d.Decode(new(any)) != io.EOF {
-		Failure(w, 400, "invalid JSON")
+		Failure(w, r, 400, "invalid JSON")
 		return false
 	}
 	return true
@@ -98,7 +109,7 @@ func IDParam(w http.ResponseWriter, r *http.Request) string {
 	log.DebugContext(r.Context(), "handling request")
 	id := chi.URLParam(r, "id")
 	if !ValidID(id) {
-		Failure(w, 400, "invalid ID")
+		Failure(w, r, 400, "invalid ID")
 		return ""
 	}
 	return id
@@ -125,7 +136,7 @@ func UserReference(w http.ResponseWriter, r *http.Request, repo store.Store, val
 	} else {
 		telegram, parseErr := strconv.ParseInt(value, 10, 64)
 		if parseErr != nil || telegram <= 0 {
-			Failure(w, http.StatusBadRequest, "user must be identified by UUID or positive telegram_id")
+			Failure(w, r, http.StatusBadRequest, "user must be identified by UUID or positive telegram_id")
 			return ""
 		}
 		id, err = repo.UserIDByTelegram(r.Context(), requestID, telegram)

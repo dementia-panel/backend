@@ -23,7 +23,7 @@ func readiness(ready func(context.Context) error) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		if err := ready(ctx); err != nil {
-			httpx.Failure(w, http.StatusServiceUnavailable, "service dependencies unavailable")
+			httpx.Failure(w, r, http.StatusServiceUnavailable, "service dependencies unavailable")
 			return
 		}
 		check(w, r)

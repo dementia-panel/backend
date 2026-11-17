@@ -43,7 +43,7 @@ func deviceName(w http.ResponseWriter, r *http.Request) (string, bool) {
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || !utf8.ValidString(name) || len(name) > 128 || strings.ContainsFunc(name, unicode.IsControl) {
-		httpx.Failure(w, 400, "device name must contain 1–128 bytes without control characters")
+		httpx.Failure(w, r, 400, "device name must contain 1–128 bytes without control characters")
 		return "", false
 	}
 	return name, true
@@ -55,7 +55,7 @@ func deviceID(w http.ResponseWriter, r *http.Request) string {
 	log.DebugContext(r.Context(), "handling request")
 	id := chi.URLParam(r, "deviceID")
 	if !httpx.ValidID(id) {
-		httpx.Failure(w, 400, "invalid device ID")
+		httpx.Failure(w, r, 400, "invalid device ID")
 		return ""
 	}
 	return id
@@ -139,7 +139,7 @@ func (h *Handler) limit(w http.ResponseWriter, r *http.Request) {
 	}
 	var limit *int
 	if len(req.Limit) == 0 || json.Unmarshal(req.Limit, &limit) != nil || (limit != nil && (*limit < 1 || *limit > 10000)) {
-		httpx.Failure(w, 400, "device_limit must be 1–10000 or null")
+		httpx.Failure(w, r, 400, "device_limit must be 1–10000 or null")
 		return
 	}
 	if err := h.store.SetUserDeviceLimit(r.Context(), requestID, user, limit); err != nil {
@@ -163,7 +163,7 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 	}
 	node := chi.URLParam(r, "nodeID")
 	if !httpx.ValidID(node) {
-		httpx.Failure(w, 400, "invalid node ID")
+		httpx.Failure(w, r, 400, "invalid node ID")
 		return
 	}
 	profile, err := h.store.UserDeviceProfile(r.Context(), requestID, user, device, node)
@@ -213,7 +213,7 @@ func (h *Handler) link(w http.ResponseWriter, r *http.Request) {
 	}
 	subscription := r.URL.Query().Get("subscription_id")
 	if !httpx.ValidID(subscription) {
-		httpx.Failure(w, 400, "invalid subscription_id")
+		httpx.Failure(w, r, 400, "invalid subscription_id")
 		return
 	}
 	token, err := h.store.DeviceSubscriptionToken(r.Context(), requestID, user, device, subscription)

@@ -114,3 +114,6 @@ func New(db *pgxpool.Pool, vault vpn.Vault) Store {
 	s.UsersRepository = users.New(connection, s)
 	return *s
 }
+
+type UserPage = shared.UserPage
+type UserQuery = shared.UserQuery

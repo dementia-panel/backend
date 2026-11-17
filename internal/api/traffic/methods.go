@@ -19,7 +19,7 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 	nodeID, userID := query.Get("node_id"), query.Get("user_id")
 	if telegram := query.Get("telegram_id"); telegram != "" {
 		if userID != "" {
-			httpx.Failure(w, 400, "provide user_id or telegram_id, not both")
+			httpx.Failure(w, r, 400, "provide user_id or telegram_id, not both")
 			return
 		}
 		userID = telegram
@@ -31,7 +31,7 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if nodeID != "" && !httpx.ValidID(nodeID) {
-		httpx.Failure(w, http.StatusBadRequest, "invalid node_id or user_id")
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid node_id or user_id")
 		return
 	}
 	days := 30
@@ -39,7 +39,7 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		var err error
 		days, err = strconv.Atoi(value)
 		if err != nil || days < 1 || days > 366 {
-			httpx.Failure(w, http.StatusBadRequest, "days must be between 1 and 366")
+			httpx.Failure(w, r, http.StatusBadRequest, "days must be between 1 and 366")
 			return
 		}
 	}
