@@ -82,3 +82,13 @@ func (s Repository) SaveTelegramSettings(ctx context.Context, requestID string, 
 		return err
 	})
 }
+
+func (s Repository) TelegramNotificationEnabled(ctx context.Context, requestID string, id int64) (bool, error) {
+	const op = "internal/storage/telegram/TelegramNotificationEnabled"
+	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
+	log.DebugContext(ctx, "checking notification delivery")
+	var enabled bool
+	err := s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM telegram_notifications n CROSS JOIN telegram_settings s
+ WHERE n.id=$1 AND s.id=true AND s.categories->>split_part(n.event,'.',1)='true')`, id).Scan(&enabled)
+	return enabled, err
+}

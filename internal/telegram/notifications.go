@@ -23,7 +23,19 @@ func (b *Bot) DeliverNotifications(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			err := b.send(ctx, formatNotification(event))
+			checkCtx, cancelCheck := context.WithTimeout(ctx, 3*time.Second)
+			enabled, err := b.repo.TelegramNotificationEnabled(checkCtx, middleware.GetReqID(checkCtx), event.ID)
+			cancelCheck()
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("could not check Telegram notification settings", sl.Err(err))
+				}
+				continue
+			}
+			if !enabled {
+				continue
+			}
+			err = b.send(ctx, formatNotification(event))
 			if err != nil && ctx.Err() != nil {
 				return
 			}

@@ -1,11 +1,13 @@
 package telegram_test
 
 import (
+	"context"
 	"dementia/backend/internal/store"
 	"dementia/backend/internal/testdb"
 	"dementia/backend/internal/vpn"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCategorySelectionSuppressesNotifications(t *testing.T) {
@@ -51,5 +53,56 @@ func TestCategorySelectionSuppressesNotifications(t *testing.T) {
 	events, err = repo.PendingTelegram(ctx, requestID)
 	if err != nil || len(events) != 0 {
 		t.Fatal("disabled notifications remain queued", err)
+	}
+}
+
+func TestConcurrentCategoryChangeBlocksStaleEnqueue(t *testing.T) {
+	pool := testdb.Pool(t, store.Migrate)
+	vault, _ := vpn.NewVault(make([]byte, 32))
+	repo := store.New(pool, vault)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	var owner int
+	if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE telegram_settings SET categories='{"node":false,"user":false,"admin":false,"api_token":false,"subscription":false}'::jsonb WHERE id=true`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := repo.ReserveNode(ctx, "concurrent-test", "Node", "203.0.113.12", "agent-token", 22, 51820)
+		done <- err
+	}()
+	blocked := false
+	for !blocked {
+		if err := pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid)))", owner).Scan(&blocked); err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("event did not serialize with settings: %v", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	events, err := repo.PendingTelegram(ctx, "concurrent-test")
+	if err != nil || len(events) != 0 {
+		t.Fatalf("disabled category was queued: %+v %v", events, err)
 	}
 }
