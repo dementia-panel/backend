@@ -158,7 +158,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	call(http.MethodGet, brandingPath, "", nil, 401, nil)
 	call(http.MethodPut, brandingPath, "", store.SubscriptionBranding{Name: "Example"}, 401, nil)
 	call(http.MethodGet, brandingPath, admin, nil, 200, &branding)
-	if branding.Name != "dementia" || branding.Logo != "" {
+	if branding.DefaultLanguage != "en" || branding.Name != "dementia" || branding.Logo != "" {
 		t.Fatalf("unexpected default branding: %+v", branding)
 	}
 	call(http.MethodPut, brandingPath, admin, store.SubscriptionBranding{Name: "Example", Logo: "data:image/svg+xml;base64,AA=="}, 400, nil)
@@ -167,14 +167,23 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		t.Fatal(err)
 	}
 	logo := "data:image/png;base64," + base64.StdEncoding.EncodeToString(logoImage.Bytes())
-	customBranding := store.SubscriptionBranding{Name: "Northern Relay", Logo: logo}
+	customBranding := store.SubscriptionBranding{DefaultLanguage: "ru", Name: "Northern Relay", Logo: logo}
 	call(http.MethodPut, brandingPath, admin, customBranding, 200, &branding)
 	if branding != customBranding {
 		t.Fatal("updated branding does not match the submitted data")
 	}
 
+	call(http.MethodPut, brandingPath, admin, map[string]any{"name": "Northern Relay", "logo": logo, "default_language": "de"}, 400, nil)
+	call(http.MethodPut, brandingPath, admin, map[string]any{"name": "Northern Relay", "logo": logo}, 200, &branding)
+	if branding.DefaultLanguage != "ru" {
+		t.Fatal("old client reset configured language")
+	}
 	// Recreate the handler to simulate restarting the backend.
 	handler = (&api.API{Store: repo, JWTSigningKey: signingKey, PublicURL: origin, Context: ctx}).Handler()
+	call(http.MethodGet, brandingPath, admin, nil, 200, &branding)
+	if branding.DefaultLanguage != "ru" {
+		t.Fatal("language was not persisted")
+	}
 	call(http.MethodGet, "/api/auth/me", admin, nil, 200, nil)
 	call(http.MethodPost, "/api/auth/logout", admin, nil, 204, nil)
 	call(http.MethodGet, "/api/auth/me", admin, nil, 401, nil)

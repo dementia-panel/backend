@@ -44,6 +44,18 @@ func (h *Handler) updateBranding(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeBody(w, r, &req) {
 		return
 	}
+	if req.DefaultLanguage == "" {
+		current, err := h.store.SubscriptionBranding(r.Context())
+		if err != nil {
+			httpx.HandleError(w, err)
+			return
+		}
+		req.DefaultLanguage = current.DefaultLanguage
+	}
+	if req.DefaultLanguage != "en" && req.DefaultLanguage != "ru" {
+		httpx.Failure(w, 400, "invalid default language")
+		return
+	}
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" || utf8.RuneCountInString(req.Name) > 64 || strings.ContainsFunc(req.Name, unicode.IsControl) {
 		httpx.Failure(w, http.StatusBadRequest, "invalid page name")
@@ -71,7 +83,7 @@ func (h *Handler) updateBranding(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Logo = contentType + ";base64," + base64.StdEncoding.EncodeToString(raw)
 	}
-	if err := h.store.SaveSubscriptionBranding(r.Context(), req.Name, req.Logo); err != nil {
+	if err := h.store.SaveSubscriptionBranding(r.Context(), req.Name, req.Logo, req.DefaultLanguage); err != nil {
 		httpx.HandleError(w, err)
 		return
 	}
