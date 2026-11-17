@@ -249,3 +249,16 @@ func (s Store) PublicDeviceServers(ctx context.Context, subscriptionID, token st
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[DeviceServer])
 }
+
+type DeviceOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (s Store) DeviceOptions(ctx context.Context, userID string) ([]DeviceOption, error) {
+	rows, err := s.DB.Query(ctx, `SELECT id::text,name FROM user_devices WHERE user_id=$1 ORDER BY created_at,id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[DeviceOption])
+}

@@ -374,10 +374,10 @@ func (s Store) PublicSubscription(ctx context.Context, token string) (Subscripti
 	var sub Subscription
 	locations := []Location{}
 	err := pgx.BeginTxFunc(ctx, s.DB, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT s.id::text,s.name,s.enabled,s.expires_at
+		err := tx.QueryRow(ctx, `SELECT s.id::text,s.name,s.enabled,s.expires_at,s.user_id::text
 			FROM subscriptions s JOIN users u ON u.id=s.user_id
 			WHERE (s.token_hash=$1 OR EXISTS(SELECT 1 FROM device_subscription_links l JOIN user_devices d ON d.id=l.device_id AND d.user_id=s.user_id WHERE l.subscription_id=s.id AND l.subscription_token_hash=s.token_hash AND l.token_hash=$1)) AND s.enabled AND u.enabled AND (s.expires_at IS NULL OR s.expires_at>now()) AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)`, HashToken(token)).
-			Scan(&sub.ID, &sub.Name, &sub.Enabled, &sub.ExpiresAt)
+			Scan(&sub.ID, &sub.Name, &sub.Enabled, &sub.ExpiresAt, &sub.UserID)
 		if err != nil {
 			return err
 		}

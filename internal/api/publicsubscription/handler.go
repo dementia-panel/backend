@@ -14,6 +14,7 @@ func Register(r chi.Router, repo store.Store, publicURL string) {
 	h := &Handler{store: repo, publicURL: publicURL}
 	r.Get("/s/{token}", h.subscriptionPage)
 	r.Get("/s/assets/copy-key.js", copyKeyScript)
+	r.Get("/s/{token}/devices/{deviceID}/link", h.deviceLink)
 	r.Get("/s/{token}/manifest", h.manifest)
 	r.Get("/s/{token}/configs/{format}.zip", h.configArchive)
 	r.Get("/s/{token}/nodes/{id}.conf", h.profile)

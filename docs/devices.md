@@ -49,3 +49,5 @@ Each bearer token grants access to exactly one device across the subscription's 
 Older subscription-wide links remain compatible and can access all devices. Share the new device-specific links when distributing access to individual devices.
 
 The public manifest includes `devices[].servers[]` with `node_id` and `last_connected_at`. Usage is tracked independently for each device/server key. Using one server does not hide profiles for the subscription's other servers. The page hides connection controls for a server once its key has a recorded handshake; the full used-key card appears only after every server has been used. Deleting the device removes its peers from the desired state on all nodes and revokes its device link. Running nodes remove these peers on the next successful state synchronization.
+
+The manifest now includes `device_options` for all devices of that user. `GET /s/{token}/devices/{device_id}/link` switches to another device of the same user. Direct profile access remains scoped, but possession of a valid subscription link now allows navigation to the user's other device links. Foreign device IDs and revoked links are rejected.

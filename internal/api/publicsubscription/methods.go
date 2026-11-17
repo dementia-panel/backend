@@ -32,11 +32,12 @@ type publicDevice struct {
 }
 
 type page struct {
-	Devices   []publicDevice              `json:"devices"`
-	Name      string                      `json:"name"`
-	ExpiresAt *time.Time                  `json:"expires_at"`
-	Locations []download                  `json:"locations"`
-	Branding  *store.SubscriptionBranding `json:"branding,omitempty"`
+	DeviceOptions []store.DeviceOption        `json:"device_options"`
+	Devices       []publicDevice              `json:"devices"`
+	Name          string                      `json:"name"`
+	ExpiresAt     *time.Time                  `json:"expires_at"`
+	Locations     []download                  `json:"locations"`
+	Branding      *store.SubscriptionBranding `json:"branding,omitempty"`
 }
 
 func (h *Handler) publicPage(r *http.Request) (page, error) {
@@ -61,7 +62,11 @@ func (h *Handler) publicPage(r *http.Request) (page, error) {
 	for _, d := range records {
 		devices = append(devices, publicDevice{ID: d.ID, Name: d.Name, Online: d.Online, LastConnectedAt: d.LastConnectedAt, Servers: byDevice[d.ID]})
 	}
-	result := page{Devices: devices, Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
+	options, err := h.store.DeviceOptions(r.Context(), sub.UserID)
+	if err != nil {
+		return page{}, err
+	}
+	result := page{DeviceOptions: options, Devices: devices, Name: sub.Name, ExpiresAt: sub.ExpiresAt, Locations: make([]download, 0, len(locations))}
 	for _, l := range locations {
 		d := download{Location: l}
 		if len(devices) == 0 {
@@ -280,4 +285,24 @@ func archiveFilename(name string, index int, format string) string {
 	}
 	safe = strings.TrimRight(safe[:min(len(safe), 15-len(prefix))], "-")
 	return prefix + safe + "." + format
+}
+
+func (h *Handler) deviceLink(w http.ResponseWriter, r *http.Request) {
+	publicHeaders(w)
+	id := chi.URLParam(r, "deviceID")
+	if !httpx.ValidID(id) {
+		httpx.Failure(w, 400, "invalid device ID")
+		return
+	}
+	sub, _, err := h.store.PublicSubscription(r.Context(), chi.URLParam(r, "token"))
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	token, err := h.store.DeviceSubscriptionToken(r.Context(), sub.UserID, id, sub.ID)
+	if err != nil {
+		httpx.HandleError(w, err)
+		return
+	}
+	httpx.Respond(w, 200, map[string]string{"url": h.publicURL + "/s/" + token})
 }

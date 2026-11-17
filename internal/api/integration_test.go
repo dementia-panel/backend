@@ -894,6 +894,23 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	if len(deviceManifest.Devices) != 1 || deviceManifest.Devices[0].ID != extra.ID || !deviceManifest.Devices[0].Online {
 		t.Fatalf("device link leaked devices or lost online status: %+v", deviceManifest)
 	}
+
+	var options struct {
+		DeviceOptions []store.DeviceOption `json:"device_options"`
+	}
+	call(http.MethodGet, deviceBase+"/manifest", "", nil, 200, &options)
+	if len(options.DeviceOptions) != 2 {
+		t.Fatal("missing device options")
+	}
+	var switched struct{ URL string }
+	call(http.MethodGet, deviceBase+"/devices/"+originalDevice+"/link", "", nil, 200, &switched)
+	if switched.URL != firstLink.URL {
+		t.Fatal("navigation returned incorrect token")
+	}
+	call(http.MethodGet, deviceBase+"/devices/"+store.NewToken()+"/link", "", nil, 400, nil)
+	var foreign store.Device
+	call(http.MethodPost, "/api/admin/users/"+other.ID+"/devices", admin, map[string]any{"name": "Other user"}, 201, &foreign)
+	call(http.MethodGet, deviceBase+"/devices/"+foreign.ID+"/link", "", nil, 404, nil)
 	// Rotating the parent must revoke every device bearer link as well.
 	rotationToken := store.NewToken()
 	if err := repo.RotateToken(ctx, assignedAccess.ID, rotationToken); err != nil {
