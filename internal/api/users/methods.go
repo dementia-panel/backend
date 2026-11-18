@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -18,7 +19,7 @@ func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
 	requestID := middleware.GetReqID(r.Context())
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.DebugContext(r.Context(), "handling request")
-	query := store.UserQuery{Page: 1, PerPage: 25, Status: "all", Sort: "username"}
+	query := store.UserQuery{Page: 1, PerPage: 25, Status: "all", Sort: "created_at"}
 	params := r.URL.Query()
 	for _, param := range []struct {
 		name  string
@@ -53,7 +54,7 @@ func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
 		query.Status = values[0]
 	}
 	if values, ok := params["sort"]; ok {
-		if len(values) != 1 || (values[0] != "username" && values[0] != "last_connected_at") {
+		if len(values) != 1 || (values[0] != "username" && values[0] != "last_connected_at" && values[0] != "created_at" && values[0] != "created_at_asc") {
 			httpx.Failure(w, r, 400, "invalid sort")
 			return
 		}
@@ -88,10 +89,11 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.DebugContext(r.Context(), "handling request")
 	var req struct {
-		ID         *string `json:"id"`
-		Username   string  `json:"username"`
-		TelegramID *int64  `json:"telegram_id"`
-		PlanID     *string `json:"plan_id"`
+		ID         *string    `json:"id"`
+		Username   string     `json:"username"`
+		TelegramID *int64     `json:"telegram_id"`
+		PlanID     *string    `json:"plan_id"`
+		ExpiresAt  *time.Time `json:"expires_at"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
@@ -112,22 +114,27 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, r, http.StatusBadRequest, "telegram_id must be positive")
 		return
 	}
+	if req.ExpiresAt != nil && req.PlanID == nil {
+		httpx.Failure(w, r, http.StatusBadRequest, "expires_at requires plan_id")
+		return
+	}
 	if req.PlanID != nil {
 		if !httpx.ValidID(*req.PlanID) {
 			httpx.Failure(w, r, http.StatusBadRequest, "invalid plan ID")
 			return
 		}
 		token := store.NewToken()
-		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), requestID, req.Username, req.TelegramID, *req.PlanID, token, req.ID)
+		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), requestID, req.Username, req.TelegramID, *req.PlanID, token, req.ID, req.ExpiresAt)
 		if err != nil {
 			httpx.HandleError(w, r, err)
 			return
 		}
 		httpx.Respond(w, http.StatusCreated, struct {
 			store.User
-			SubscriptionURL string `json:"subscription_url"`
-			AccessID        string `json:"access_id"`
-		}{user, h.publicURL + "/s/" + token, accessID})
+			SubscriptionURL string     `json:"subscription_url"`
+			AccessID        string     `json:"access_id"`
+			ExpiresAt       *time.Time `json:"expires_at"`
+		}{user, h.publicURL + "/s/" + token, accessID, req.ExpiresAt})
 		return
 	}
 	u, err := h.store.CreateUser(r.Context(), requestID, req.Username, req.TelegramID, req.ID)

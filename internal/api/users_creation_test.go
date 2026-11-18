@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"dementia/backend/internal/api"
 	"dementia/backend/internal/api/httpx"
@@ -68,8 +69,13 @@ func TestUserCreationAcceptsOptionalUUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	const plannedID = "bbbbbbbb-1234-4234-8234-123456789abc"
+	for _, bad := range []any{"2030-01-01", "invalid", 123} {
+		call(map[string]any{"username": "invalid-expiry", "plan_id": plan.ID, "expires_at": bad}, 400)
+	}
+	call(map[string]any{"username": "missing-plan", "expires_at": "2032-04-05T18:42:23+03:00"}, 400)
+	const expiry = "2032-04-05T18:42:23+03:00"
 	for _, requested := range []any{plannedID, nil} {
-		payload := map[string]any{"username": "planned-" + fmt.Sprint(requested), "plan_id": plan.ID}
+		payload := map[string]any{"username": "planned-" + fmt.Sprint(requested), "plan_id": plan.ID, "expires_at": expiry}
 		if requested != nil {
 			payload["id"] = requested
 		}
@@ -77,6 +83,12 @@ func TestUserCreationAcceptsOptionalUUID(t *testing.T) {
 		if !httpx.ValidID(user.ID) || (requested != nil && user.ID != requested) || user.SubscriptionPlanID == nil || *user.SubscriptionPlanID != plan.ID || user.DeviceCount != 1 {
 			t.Fatalf("planned user: %+v", user)
 		}
+		access, err := repo.AssignedSubscription(t.Context(), "uuid-test", user.ID)
+		expected, _ := time.Parse(time.RFC3339, expiry)
+		if err != nil || access == nil || access.ExpiresAt == nil || !access.ExpiresAt.Equal(expected) {
+			t.Fatalf("expiry not saved atomically: %+v %v", access, err)
+		}
+
 	}
 	call(map[string]any{"username": "plan-duplicate", "id": id, "plan_id": plan.ID}, 409)
 	const rollbackID = "cccccccc-1234-4234-8234-123456789abc"

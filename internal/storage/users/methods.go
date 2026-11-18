@@ -6,6 +6,7 @@ import (
 	. "dementia/backend/internal/storage/shared"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -17,7 +18,7 @@ func (s Repository) CreateUser(ctx context.Context, requestID string, username s
 	return ScanUser(s.DB.QueryRow(ctx, `INSERT INTO users(id,username,telegram_id,device_limit) VALUES(coalesce($3::uuid,gen_random_uuid()),$1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
 		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID, id))
 }
-func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID string, username string, telegramID *int64, planID string, token string, id *string) (User, string, error) {
+func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID string, username string, telegramID *int64, planID string, token string, id *string, expiresAt *time.Time) (User, string, error) {
 	const op = "internal/storage/users/CreateUserWithSubscription"
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
@@ -31,6 +32,9 @@ func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID st
 			return err
 		}
 		if accessID, _, err = s.AssignSubscriptionPlanTx(ctx, requestID, tx, user.ID, &planID, token); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE subscriptions SET expires_at=$2 WHERE id=$1`, accessID, expiresAt); err != nil {
 			return err
 		}
 		user.SubscriptionPlanID = &planID
@@ -89,9 +93,13 @@ func (s Repository) UsersPage(ctx context.Context, requestID string, query UserQ
 	if query.Page < 1 || query.Page > 1000000000 || query.PerPage < 1 || query.PerPage > 100 {
 		return result, errors.New("invalid pagination")
 	}
-	order := "username,id"
+	order := "created_at DESC,id DESC"
 	switch query.Sort {
-	case "", "username":
+	case "", "created_at":
+	case "created_at_asc":
+		order = "created_at,id"
+	case "username":
+		order = "username,id"
 	case "last_connected_at":
 		order = "last_connected_at DESC NULLS LAST,id"
 	default:

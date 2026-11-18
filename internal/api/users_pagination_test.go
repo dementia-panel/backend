@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"testing"
 
 	"dementia/backend/internal/api"
@@ -62,6 +63,22 @@ func TestUserPaginationAndSingleDeviceCreation(t *testing.T) {
 	if len(page.Items) != 25 || page.Total != 32 || page.TotalPages != 2 || page.Page != 1 || page.PerPage != 25 || page.OnlineTotal != 0 {
 		t.Fatalf("default page: %+v", page)
 	}
+	if page.Items[0].Username != "extra-user-1" {
+		t.Fatal("default sort must show newest users first")
+	}
+	var ordered store.UserPage
+	call("GET", "/api/admin/users?sort=created_at_asc&per_page=1", nil, 200, &ordered)
+	if ordered.Items[0].ID != first.ID {
+		t.Fatal("oldest-first sort failed")
+	}
+	call("GET", "/api/admin/users?sort=username&per_page=1", nil, 200, &ordered)
+	if ordered.Items[0].Username != "extra-user-0" {
+		t.Fatal("username sort failed")
+	}
+	call("GET", "/api/admin/users?sort=created_at&search=USER-2&page=2&per_page=3", nil, 200, &ordered)
+	if ordered.Total != 10 || len(ordered.Items) != 3 || ordered.Items[0].Username != "user-26" {
+		t.Fatal("created sort with filtering and pagination failed")
+	}
 	ids := map[string]bool{}
 	for _, user := range page.Items {
 		ids[user.ID] = true
@@ -76,11 +93,29 @@ func TestUserPaginationAndSingleDeviceCreation(t *testing.T) {
 		}
 		ids[user.ID] = true
 	}
+	if _, err := pool.Exec(t.Context(), "UPDATE users SET created_at='2030-01-01T00:00:00Z'"); err != nil {
+		t.Fatal(err)
+	}
+	expected := make([]string, 0, len(ids))
+	for id := range ids {
+		expected = append(expected, id)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(expected)))
+	var actual []string
+	for index := 1; index <= 4; index++ {
+		call("GET", fmt.Sprintf("/api/admin/users?sort=created_at&page=%d&per_page=10", index), nil, 200, &ordered)
+		for _, user := range ordered.Items {
+			actual = append(actual, user.ID)
+		}
+	}
+	if fmt.Sprint(actual) != fmt.Sprint(expected) {
+		t.Fatal("created_at ties produced unstable pagination")
+	}
 	call("GET", "/api/admin/users?page=999&per_page=100", nil, 200, &page)
 	if len(page.Items) != 0 || page.Items == nil || page.Total != 32 || page.TotalPages != 1 {
 		t.Fatalf("out-of-range page: %+v", page)
 	}
-	call("GET", "/api/admin/users?search=USER-2&per_page=3&page=2", nil, 200, &page)
+	call("GET", "/api/admin/users?search=USER-2&per_page=3&page=2&sort=username", nil, 200, &page)
 	if len(page.Items) != 3 || page.Total != 10 || page.Items[0].Username != "user-23" {
 		t.Fatalf("search before pagination: %+v", page)
 	}
@@ -96,7 +131,7 @@ func TestUserPaginationAndSingleDeviceCreation(t *testing.T) {
 	if page.Total != 0 || page.TotalPages != 0 || page.Items == nil {
 		t.Fatal("empty result shape incorrect")
 	}
-	for _, query := range []string{"page=0", "page=-1", "page=abc", "page=1000000001", "page=1&page=2", "per_page=0", "per_page=101", "per_page=2&per_page=3", "per_page=", "status=invalid", "sort=invalid", "search=" + url.QueryEscape(string(make([]byte, 129))), "search=%00"} {
+	for _, query := range []string{"page=0", "page=-1", "page=abc", "page=1000000001", "page=1&page=2", "per_page=0", "per_page=101", "per_page=2&per_page=3", "per_page=", "status=invalid", "sort=invalid", "sort=created_at&sort=username", "search=" + url.QueryEscape(string(make([]byte, 129))), "search=%00"} {
 		call("GET", "/api/admin/users?"+query, nil, 400, nil)
 	}
 	call("PATCH", "/api/admin/users/123456789", map[string]any{"enabled": false}, 204, nil)
