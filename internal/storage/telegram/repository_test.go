@@ -23,7 +23,7 @@ func TestCategorySelectionSuppressesNotifications(t *testing.T) {
 	if err := repo.SaveTelegramSettings(ctx, requestID, settings); err != nil {
 		t.Fatal(err)
 	}
-	user, err := repo.CreateUser(ctx, requestID, "alice", nil)
+	user, err := repo.CreateUser(ctx, requestID, "alice", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

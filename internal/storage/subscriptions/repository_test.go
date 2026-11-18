@@ -17,7 +17,7 @@ func TestRotatingLinkRevokesPreviousURL(t *testing.T) {
 	repo := store.New(pool, vault)
 	ctx := t.Context()
 	const requestID = "repository-test"
-	user, err := repo.CreateUser(ctx, requestID, "alice", nil)
+	user, err := repo.CreateUser(ctx, requestID, "alice", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

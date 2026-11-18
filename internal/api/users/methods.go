@@ -88,12 +88,20 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.DebugContext(r.Context(), "handling request")
 	var req struct {
+		ID         *string `json:"id"`
 		Username   string  `json:"username"`
 		TelegramID *int64  `json:"telegram_id"`
 		PlanID     *string `json:"plan_id"`
 	}
 	if !httpx.Decode(w, r, &req) {
 		return
+	}
+	if req.ID != nil {
+		*req.ID = strings.ToLower(*req.ID)
+		if !httpx.ValidID(*req.ID) {
+			httpx.Failure(w, r, http.StatusBadRequest, "invalid user ID")
+			return
+		}
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	if !validUsername(req.Username) {
@@ -110,7 +118,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token := store.NewToken()
-		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), requestID, req.Username, req.TelegramID, *req.PlanID, token)
+		user, accessID, err := h.store.CreateUserWithSubscription(r.Context(), requestID, req.Username, req.TelegramID, *req.PlanID, token, req.ID)
 		if err != nil {
 			httpx.HandleError(w, r, err)
 			return
@@ -122,7 +130,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		}{user, h.publicURL + "/s/" + token, accessID})
 		return
 	}
-	u, err := h.store.CreateUser(r.Context(), requestID, req.Username, req.TelegramID)
+	u, err := h.store.CreateUser(r.Context(), requestID, req.Username, req.TelegramID, req.ID)
 	if err != nil {
 		httpx.HandleError(w, r, err)
 		return

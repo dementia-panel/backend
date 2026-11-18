@@ -21,7 +21,7 @@ func TestDefaultLimitAndDeletedDeviceCapacity(t *testing.T) {
 	if err := repo.SetDefaultDeviceLimit(ctx, requestID, &limit); err != nil {
 		t.Fatal(err)
 	}
-	user, err := repo.CreateUser(ctx, requestID, "alice", nil)
+	user, err := repo.CreateUser(ctx, requestID, "alice", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

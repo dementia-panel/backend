@@ -10,14 +10,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s Repository) CreateUser(ctx context.Context, requestID string, username string, telegramID *int64) (User, error) {
+func (s Repository) CreateUser(ctx context.Context, requestID string, username string, telegramID *int64, id *string) (User, error) {
 	const op = "internal/storage/users/CreateUser"
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
-	return ScanUser(s.DB.QueryRow(ctx, `INSERT INTO users(username,telegram_id,device_limit) VALUES($1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
-		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID))
+	return ScanUser(s.DB.QueryRow(ctx, `INSERT INTO users(id,username,telegram_id,device_limit) VALUES(coalesce($3::uuid,gen_random_uuid()),$1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
+		RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID, id))
 }
-func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID string, username string, telegramID *int64, planID string, token string) (User, string, error) {
+func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID string, username string, telegramID *int64, planID string, token string, id *string) (User, string, error) {
 	const op = "internal/storage/users/CreateUserWithSubscription"
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
@@ -25,8 +25,8 @@ func (s Repository) CreateUserWithSubscription(ctx context.Context, requestID st
 	var accessID string
 	err := pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
 		var err error
-		user, err = ScanUser(tx.QueryRow(ctx, `INSERT INTO users(username,telegram_id,device_limit) VALUES($1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
-			RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID))
+		user, err = ScanUser(tx.QueryRow(ctx, `INSERT INTO users(id,username,telegram_id,device_limit) VALUES(coalesce($3::uuid,gen_random_uuid()),$1,$2,(SELECT default_device_limit FROM device_settings WHERE id))
+			RETURNING id::text,username,telegram_id,enabled,created_at,updated_at,NULL::timestamptz,false,subscription_plan_id::text,device_limit,0,0`, username, telegramID, id))
 		if err != nil {
 			return err
 		}

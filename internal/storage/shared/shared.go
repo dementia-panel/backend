@@ -209,6 +209,7 @@ var ErrNodeUnavailable = errors.New("node does not exist or is unavailable")
 var ErrAddressPoolFull = errors.New("node address pool is full")
 
 type Node struct {
+	OnlineDeviceCount   int        `json:"online_device_count"`
 	EndpointHost        *string    `json:"endpoint_host"`
 	EndpointPort        *int       `json:"endpoint_port"`
 	RetiredAt           *time.Time `json:"retired_at"`
@@ -231,11 +232,23 @@ type Node struct {
 	Error               *string    `json:"error"`
 }
 
-const NodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage"
+const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage"
+
+const NodeProvisionColumns = nodeColumns + ",0"
+
+const NodeColumns = nodeColumns + `,
+ CASE WHEN enabled AND status='ready' AND retired_at IS NULL AND applied_revision=revision
+ AND handshakes_reported_at>now()-interval '1 minute' THEN (
+ SELECT count(DISTINCT p.device_id) FROM peers p
+ JOIN subscriptions s ON s.id=p.subscription_id JOIN users u ON u.id=s.user_id
+ WHERE p.node_id=nodes.id AND p.current_handshake_at>now()-interval '3 minutes'
+ AND u.enabled AND s.enabled AND (s.expires_at IS NULL OR s.expires_at>now())
+ AND (s.traffic_limit_bytes IS NULL OR s.traffic_used_bytes<s.traffic_limit_bytes)
+ ) ELSE 0 END`
 
 func ScanNode(row pgx.Row) (Node, error) {
 	var n Node
-	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort, &n.OperationStage)
+	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort, &n.OperationStage, &n.OnlineDeviceCount)
 	return n, err
 }
 func NewToken() string {

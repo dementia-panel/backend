@@ -24,7 +24,7 @@ func TestReferencedPlanCannotBeDeleted(t *testing.T) {
 	if err := repo.FinishInstall(ctx, requestID, node.ID, "agent-test", "public-key", "header-key", ""); err != nil {
 		t.Fatal(err)
 	}
-	user, err := repo.CreateUser(ctx, requestID, "alice", nil)
+	user, err := repo.CreateUser(ctx, requestID, "alice", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

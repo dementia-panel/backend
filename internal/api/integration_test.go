@@ -1058,7 +1058,7 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 			}
 			fresh = append(fresh, fixture{n.ID, tok, public, header})
 		}
-		u, e := repo.CreateUser(ctx, middleware.GetReqID(ctx), "per-server-test", nil)
+		u, e := repo.CreateUser(ctx, middleware.GetReqID(ctx), "per-server-test", nil, nil)
 		if e != nil {
 			t.Fatal(e)
 		}

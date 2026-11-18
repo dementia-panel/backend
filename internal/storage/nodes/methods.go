@@ -23,7 +23,7 @@ func (s Repository) ReserveNode(ctx context.Context, requestID string, name, ip,
 		WHERE nodes.operation_stage<>'removing' AND
 		    (nodes.retired_at IS NOT NULL OR (nodes.status='failed'
 		     AND nodes.vpn_port=EXCLUDED.vpn_port AND nodes.ssh_port=EXCLUDED.ssh_port))
-		RETURNING `+NodeColumns, name, ip, HashToken(token), sshPort, vpnPort, len(resetHostKey) > 0 && resetHostKey[0]))
+		RETURNING `+NodeProvisionColumns, name, ip, HashToken(token), sshPort, vpnPort, len(resetHostKey) > 0 && resetHostKey[0]))
 }
 func (s Repository) TrustNodeHostKey(ctx context.Context, requestID string, id, token, fingerprint string) error {
 	const op = "internal/storage/nodes/TrustNodeHostKey"
