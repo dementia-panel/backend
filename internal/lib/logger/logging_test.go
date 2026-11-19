@@ -49,3 +49,22 @@ func TestRecoverRequestsDoesNotLogPanicValue(t *testing.T) {
 		t.Fatalf("unexpected status %d or leaked panic context", response.Code)
 	}
 }
+
+func TestRequestsSkipsFastPollingAndLogsFailures(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	router := chi.NewRouter()
+	router.Use(Requests)
+	router.Get("/api/admin/nodes", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	router.Post("/api/agent/nodes/{id}/ack", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/admin/nodes", nil))
+	if output.Len() != 0 {
+		t.Fatalf("routine polling logged: %s", output.String())
+	}
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/agent/nodes/node-1/ack", nil))
+	if !strings.Contains(output.String(), `"status":503`) {
+		t.Fatalf("agent failure missing from logs: %s", output.String())
+	}
+}

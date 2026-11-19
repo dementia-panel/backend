@@ -21,16 +21,22 @@ func Requests(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 		route := chi.RouteContext(r.Context()).RoutePattern()
+		duration := time.Since(start)
+		if status < 400 && duration < time.Second &&
+			(r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(route, "/api/agent/") ||
+				(r.Method == http.MethodGet && strings.HasPrefix(route, "/api/admin/"))) {
+			return
+		}
 		level := slog.LevelInfo
 		switch {
 		case status >= 500:
 			level = slog.LevelError
 		case status >= http.StatusBadRequest:
 			level = slog.LevelWarn
-		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || (status < 400 && strings.HasPrefix(route, "/api/agent/")):
-			level = slog.LevelDebug
+		case duration >= time.Second:
+			level = slog.LevelWarn
 		}
-		slog.Log(r.Context(), level, "http request", "method", r.Method, "request_id", middleware.GetReqID(r.Context()), "route", route, "status", status, "duration_ms", time.Since(start).Milliseconds(), "bytes", writer.BytesWritten())
+		slog.Log(r.Context(), level, "http request", "method", r.Method, "request_id", middleware.GetReqID(r.Context()), "route", route, "status", status, "duration_ms", duration.Milliseconds(), "bytes", writer.BytesWritten())
 	})
 }
 func RecoverRequests(next http.Handler) http.Handler {

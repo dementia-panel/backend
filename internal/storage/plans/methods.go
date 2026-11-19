@@ -49,7 +49,7 @@ func (s Repository) SaveSubscriptionPlan(ctx context.Context, requestID string, 
 				return pgx.ErrNoRows
 			}
 		}
-		rows, err := tx.Query(ctx, `UPDATE subscriptions SET name=$2 WHERE plan_id=$1 RETURNING id::text`, plan.ID, name)
+		rows, err := tx.Query(ctx, `SELECT id::text FROM subscriptions WHERE plan_id=$1 ORDER BY id FOR UPDATE`, plan.ID)
 		if err != nil {
 			return err
 		}
@@ -57,25 +57,10 @@ func (s Repository) SaveSubscriptionPlan(ctx context.Context, requestID string, 
 		if err != nil {
 			return err
 		}
-		var valid int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT id FROM nodes WHERE id=ANY($1::text[]::uuid[]) AND retired_at IS NULL ORDER BY id FOR UPDATE) n`, nodeIDs).Scan(&valid); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE subscriptions SET name=$2 WHERE plan_id=$1 AND name IS DISTINCT FROM $2`, plan.ID, name); err != nil {
 			return err
 		}
-		if valid != len(nodeIDs) {
-			return ErrNodeUnavailable
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM subscription_plan_nodes WHERE plan_id=$1`, plan.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO subscription_plan_nodes(plan_id,node_id) SELECT $1,unnest($2::text[]::uuid[])`, plan.ID, nodeIDs); err != nil {
-			return err
-		}
-		for _, accessID := range accessIDs {
-			if err := s.ReplaceSubscriptionNodesTx(ctx, requestID, tx, accessID, nodeIDs); err != nil {
-				return err
-			}
-		}
-		return nil
+		return s.replacePlanNodes(ctx, tx, plan.ID, accessIDs, nodeIDs)
 	})
 	return plan, err
 }

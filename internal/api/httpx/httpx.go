@@ -63,6 +63,7 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, store.ErrDeviceLimit), errors.Is(err, store.ErrAmbiguousUser), errors.Is(err, store.ErrNodeUnavailable), errors.Is(err, store.ErrAddressPoolFull):
 		Failure(w, r, 409, err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014" || pgErr.Code == "40P01" || pgErr.Code == "40001"):
+		log.WarnContext(r.Context(), "database operation unavailable", "cause", ErrorType(err))
 		Failure(w, r, http.StatusServiceUnavailable, "database operation temporarily unavailable")
 	case errors.As(err, &pgErr) && pgErr.Code == "23505":
 		Failure(w, r, 409, "resource already exists")
@@ -72,6 +73,9 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 func ErrorType(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		return pgErr.Code

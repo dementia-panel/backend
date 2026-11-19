@@ -35,7 +35,7 @@ func run() error {
 		if err := level.UnmarshalText([]byte(c.LogLevel)); err != nil {
 			return errors.New("invalid LOG_LEVEL")
 		}
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+		slog.SetDefault(slog.New(logger.Filter(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))))
 	} else {
 		slog.SetDefault(log)
 	}
