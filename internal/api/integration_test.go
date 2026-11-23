@@ -1012,13 +1012,23 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 	}
 	rows.Close()
 
+	var duplicateConnections int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM (
+		SELECT data->>'id' FROM events WHERE event='user.first_connected'
+		GROUP BY data->>'id' HAVING count(*) > 1
+	) duplicate_users`).Scan(&duplicateConnections); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateConnections != 0 {
+		t.Errorf("duplicate first connection events for %d users", duplicateConnections)
+	}
 	for _, event := range events {
 		if group, _, _ := strings.Cut(event.Name, "."); event.Scope != group {
 			t.Errorf("%s has wrong scope %q", event.Name, event.Scope)
 		}
 
 	}
-	for name, expected := range map[string]int{"user.created": 1, "node.created": 2, "node.modified": 2, "node.connection_lost": 2, "node.connection_restored": 2, "subscription.created": 1, "subscription.nodes_changed": 1} {
+	for name, expected := range map[string]int{"user.created": 1, "user.first_connected": 1, "node.created": 2, "node.modified": 2, "node.connection_lost": 2, "node.connection_restored": 2, "subscription.created": 1, "subscription.nodes_changed": 1} {
 		if counts[name] < expected {
 			t.Errorf("%s: got %d, want %d", name, counts[name], expected)
 		}

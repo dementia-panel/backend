@@ -92,8 +92,8 @@ func sendWebhook(ctx context.Context, client *http.Client, endpoint, secret stri
 	signature := hmac.New(sha256.New, []byte(secret))
 	signature.Write(body)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Remnawave-Signature", hex.EncodeToString(signature.Sum(nil)))
-	req.Header.Set("X-Remnawave-Timestamp", event.Timestamp.UTC().Format(time.RFC3339Nano))
+	req.Header.Set("X-Dementia-Signature", hex.EncodeToString(signature.Sum(nil)))
+	req.Header.Set("X-Dementia-Timestamp", event.Timestamp.UTC().Format(time.RFC3339Nano))
 	res, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook request failed")

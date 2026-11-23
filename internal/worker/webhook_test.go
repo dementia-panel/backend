@@ -29,7 +29,7 @@ func TestSendWebhook(t *testing.T) {
 			}
 			mac := hmac.New(sha256.New, []byte(secret))
 			mac.Write(body)
-			if req.Method != http.MethodPost || req.Header.Get("X-Remnawave-Signature") != hex.EncodeToString(mac.Sum(nil)) || req.Header.Get("X-Remnawave-Timestamp") != event.Timestamp.Format(time.RFC3339Nano) {
+			if req.Method != http.MethodPost || req.Header.Get("X-Dementia-Signature") != hex.EncodeToString(mac.Sum(nil)) || req.Header.Get("X-Dementia-Timestamp") != event.Timestamp.Format(time.RFC3339Nano) {
 				t.Error("unexpected webhook method or signature headers")
 			}
 			var received store.Event
