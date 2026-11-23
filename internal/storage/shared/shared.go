@@ -232,6 +232,12 @@ type Node struct {
 	Error               *string    `json:"error"`
 }
 
+type NodeMetrics struct {
+	OnlineUsers       int   `json:"online_users"`
+	PeakOnlineUsers   int   `json:"peak_online_users"`
+	TrafficTodayBytes int64 `json:"traffic_today_bytes"`
+}
+
 const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage"
 
 const NodeProvisionColumns = nodeColumns + ",0"

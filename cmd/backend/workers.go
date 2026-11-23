@@ -41,6 +41,23 @@ func startWorkers(ctx context.Context, stop context.CancelFunc, database *postgr
 	workers.Go(func() {
 		worker.ResetTraffic(ctx, dbStore)
 	})
+	workers.Go(func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := dbStore.SampleOnlinePeak(probe, "node-metrics-worker")
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("failed to sample node online peak", sl.Err(err))
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
 	if bot != nil {
 		workers.Go(func() {
 			bot.Run(ctx, c.PublicURL)

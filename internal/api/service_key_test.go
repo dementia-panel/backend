@@ -42,6 +42,7 @@ func TestServiceKeyRouteBoundary(t *testing.T) {
 		{"PUT", "/api/admin/users/{id}/device-limit"},
 		{"GET", "/api/admin/users/{id}/devices/{deviceID}/nodes/{nodeID}/profile"},
 		{"GET", "/api/admin/nodes"},
+		{"GET", "/api/admin/nodes/metrics"},
 		{"GET", "/api/admin/nodes/{id}"},
 		{"POST", "/api/admin/nodes"},
 		{"PATCH", "/api/admin/nodes/{id}"},

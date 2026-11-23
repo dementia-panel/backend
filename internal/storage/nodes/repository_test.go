@@ -133,4 +133,19 @@ func TestNodeOnlineDeviceCounts(t *testing.T) {
 	}
 	exec("UPDATE nodes SET applied_revision=revision,handshakes_reported_at=now()")
 	check(1, 1)
+	metrics, err := repo.NodeMetrics(ctx, requestID)
+	if err != nil || metrics.OnlineUsers != 1 || metrics.PeakOnlineUsers != 1 {
+		t.Fatalf("current unique users: %+v, %v", metrics, err)
+	}
+	exec(`INSERT INTO traffic_daily(day,node_id,user_id,received_bytes,sent_bytes)
+		VALUES ((now() AT TIME ZONE 'UTC')::date,$1,$3,100,25),
+		       ((now() AT TIME ZONE 'UTC')::date,$2,$3,200,50)`, nodes[0].ID, nodes[1].ID, user.ID)
+	if err := repo.SampleOnlinePeak(ctx, requestID); err != nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE peers SET current_handshake_at=now()-interval '4 minutes'")
+	metrics, err = repo.NodeMetrics(ctx, requestID)
+	if err != nil || metrics.OnlineUsers != 0 || metrics.PeakOnlineUsers != 1 || metrics.TrafficTodayBytes != 375 {
+		t.Fatalf("persisted peak and daily traffic: %+v, %v", metrics, err)
+	}
 }

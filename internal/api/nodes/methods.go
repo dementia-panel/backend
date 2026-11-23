@@ -34,6 +34,15 @@ func (h *Handler) nodes(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, 200, nodes)
 }
+
+func (h *Handler) metrics(w http.ResponseWriter, r *http.Request) {
+	metrics, err := h.store.NodeMetrics(r.Context(), middleware.GetReqID(r.Context()))
+	if err != nil {
+		httpx.HandleError(w, r, err)
+		return
+	}
+	httpx.Respond(w, http.StatusOK, metrics)
+}
 func (h *Handler) node(w http.ResponseWriter, r *http.Request) {
 	const op = "internal/api/nodes/node"
 	requestID := middleware.GetReqID(r.Context())

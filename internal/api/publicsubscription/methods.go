@@ -186,7 +186,7 @@ func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="dementia-`+id+`.conf"`)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": profileFilename(profile.Name, "conf")}))
 	_, _ = w.Write([]byte(profile.Conf()))
 }
 func (h *Handler) amneziaProfile(w http.ResponseWriter, r *http.Request) {
@@ -233,15 +233,23 @@ func (h *Handler) writeAmneziaKey(w http.ResponseWriter, r *http.Request, attach
 		_, _ = w.Write([]byte(link))
 		return
 	}
-	name := strings.Map(func(r rune) rune {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": profileFilename(profile.Name, "vpn")}))
+	_, _ = w.Write([]byte(link))
+}
+
+func profileFilename(name, extension string) string {
+	name = strings.Map(func(r rune) rune {
 		if strings.ContainsRune(`/\:*?"<>|`, r) || r < 32 || r == 127 {
 			return '-'
 		}
 		return r
-	}, profile.Name)
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".vpn"}))
-	_, _ = w.Write([]byte(link))
+	}, name)
+	name = strings.Trim(strings.TrimSpace(name), ". -")
+	if name == "" {
+		name = "AmneziaWG"
+	}
+	return name + "." + extension
 }
 func (h *Handler) configArchive(w http.ResponseWriter, r *http.Request) {
 	const op = "internal/api/publicsubscription/configArchive"

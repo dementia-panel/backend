@@ -19,6 +19,7 @@ type Handler struct {
 func Register(r chi.Router, repo store.Store, publicURL string, ctx context.Context, workers *jobs.Group) {
 	h := &Handler{store: repo, publicURL: publicURL, context: ctx, workers: workers, installSlots: make(chan struct{}, 4)}
 	r.Get("/nodes", h.nodes)
+	r.Get("/nodes/metrics", h.metrics)
 	r.Get("/nodes/{id}", h.node)
 	r.Post("/nodes", h.createNode)
 	r.Patch("/nodes/{id}", h.updateNode)

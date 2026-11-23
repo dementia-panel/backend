@@ -48,6 +48,7 @@ var ErrNodeUnavailable = shared.ErrNodeUnavailable
 var ErrAddressPoolFull = shared.ErrAddressPoolFull
 
 type Node = shared.Node
+type NodeMetrics = shared.NodeMetrics
 
 func NewToken() string              { return shared.NewToken() }
 func HashToken(value string) []byte { return shared.HashToken(value) }
