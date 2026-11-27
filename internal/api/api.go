@@ -59,6 +59,7 @@ func (a *API) Handler() http.Handler {
 		apitokens.Register(r.With(admin.RequireSession), a.Store)
 		settings.Register(r.With(admin.RequireSession), a.Store, a.IntegrationStatus)
 		subscriptions.RegisterProfileExport(r.With(admin.RequireSession), a.Store)
+		nodes.RegisterUpgrade(r.With(admin.RequireSession), a.Store, a.Context, &a.Workers)
 		r.Group(func(r chi.Router) {
 			r.Use(apitokens.AllowBearer(a.Store, admin.RequireSession))
 			nodes.Register(r, a.Store, a.PublicURL, a.Context, &a.Workers)

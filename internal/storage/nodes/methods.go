@@ -19,7 +19,7 @@ func (s Repository) ReserveNode(ctx context.Context, requestID string, name, ip,
 		    host_key=CASE WHEN nodes.operation_stage='removed' OR $6 THEN '' ELSE nodes.host_key END,
 		    endpoint_host=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_host END,
 		    endpoint_port=CASE WHEN nodes.retired_at IS NOT NULL THEN NULL ELSE nodes.endpoint_port END,
-		    last_seen_at=NULL,handshakes_reported_at=NULL,connection_ok=NULL,connection_checked_at=NULL,applied_revision=0,revision=nodes.revision+1
+		    last_seen_at=NULL,handshakes_reported_at=NULL,connection_ok=NULL,connection_checked_at=NULL,applied_revision=0,revision=nodes.revision+1,agent_version=''
 		WHERE nodes.operation_stage<>'removing' AND
 		    (nodes.retired_at IS NOT NULL OR (nodes.status='failed'
 		     AND nodes.vpn_port=EXCLUDED.vpn_port AND nodes.ssh_port=EXCLUDED.ssh_port))
@@ -82,9 +82,41 @@ func (s Repository) RecoverInstallations(ctx context.Context, requestID string) 
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
 	_, err := s.DB.Exec(ctx, `UPDATE nodes SET status=CASE WHEN status='installing' THEN 'failed' ELSE status END,
- error=CASE WHEN operation_stage='removing' THEN 'remote cleanup interrupted; retry removal' ELSE 'installation interrupted; submit credentials again' END,
- operation_stage=CASE WHEN operation_stage='removing' THEN 'remove_failed' ELSE operation_stage END
- WHERE status='installing' OR operation_stage='removing'`)
+ error=CASE WHEN operation_stage='removing' THEN 'remote cleanup interrupted; retry removal'
+            WHEN operation_stage='upgrading' THEN 'node update interrupted; retry update'
+            ELSE 'installation interrupted; submit credentials again' END,
+ operation_stage=CASE WHEN operation_stage='removing' THEN 'remove_failed'
+                      WHEN operation_stage='upgrading' THEN 'upgrade_failed' ELSE operation_stage END
+ WHERE status='installing' OR operation_stage IN ('removing','upgrading')`)
+	return err
+}
+
+func (s Repository) BeginNodeUpgrade(ctx context.Context, requestID, id string) (Node, error) {
+	return ScanNode(s.DB.QueryRow(ctx, `UPDATE nodes SET operation_stage='upgrading',error=NULL
+        WHERE id=$1 AND status='ready' AND retired_at IS NULL
+          AND operation_stage NOT IN ('upgrading','removing') RETURNING `+NodeColumns, id))
+}
+
+func (s Repository) VerifyUpgradeHostKey(ctx context.Context, requestID, id, key string) error {
+	var trusted bool
+	err := s.DB.QueryRow(ctx, `SELECT host_key<>'' AND host_key=$2 FROM nodes
+        WHERE id=$1 AND operation_stage='upgrading'`, id, key).Scan(&trusted)
+	if err != nil {
+		return err
+	}
+	if !trusted {
+		return ErrNodeUnavailable
+	}
+	return nil
+}
+
+func (s Repository) FinishNodeUpgrade(ctx context.Context, requestID, id, failure string) error {
+	stage := "complete"
+	if failure != "" {
+		stage = "upgrade_failed"
+	}
+	_, err := s.DB.Exec(ctx, `UPDATE nodes SET operation_stage=$2,error=nullif($3,'')
+        WHERE id=$1 AND operation_stage='upgrading'`, id, stage, failure)
 	return err
 }
 func (s Repository) UpdateNode(ctx context.Context, requestID string, id string, name *string, enabled *bool) (Node, error) {

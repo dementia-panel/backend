@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -16,7 +17,7 @@ import (
 	"strings"
 )
 
-const Parameters = "Jc = 0\nJmin = 0\nJmax = 0\nS1 = 32\nS2 = 48\nS3 = 16\nS4 = 24\nH1 = 14581001\nH2 = 14581002\nH3 = 14581003\nH4 = 14581004\n"
+const Parameters = "S1 = 32\nS2 = 48\nS3 = 16\nS4 = 24\nH1 = 14581001\nH2 = 14581002\nH3 = 14581003\nH4 = 14581004\n"
 
 func KeyPair() (private, public string, err error) {
 	key := make([]byte, 32)
@@ -49,14 +50,20 @@ const mtu = "1280"
 const keepalive = "25"
 const allowed = "0.0.0.0/0"
 
+func (p ClientProfile) parameters() string {
+	seed := sha256.Sum256([]byte(p.HeaderKey))
+	jmin := 40 + int(seed[1]%33)
+	return fmt.Sprintf("Jc = %d\nJmin = %d\nJmax = %d\n%s", 3+int(seed[0]%3), jmin, jmin+48+int(seed[2]%49), Parameters)
+}
+
 func (p ClientProfile) Conf() string {
 	endpoint := net.JoinHostPort(p.IP, strconv.Itoa(p.Port))
-	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = %s\nDNS = %s\nMTU = %s\n%sHeaderProtectionKey = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s\nPersistentKeepalive = %s\n", p.PrivateKey, p.Address, dns, mtu, Parameters, p.HeaderKey, p.PublicKey, endpoint, allowed, keepalive)
+	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = %s\nDNS = %s\nMTU = %s\n%sHeaderProtectionKey = %s\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = %s\nPersistentKeepalive = %s\n", p.PrivateKey, p.Address, dns, mtu, p.parameters(), p.HeaderKey, p.PublicKey, endpoint, allowed, keepalive)
 }
 func (p ClientProfile) AmneziaLink() (string, error) {
 	const container = "amnezia-awg"
 	lastConfig := map[string]any{"config": p.Conf(), "client_priv_key": p.PrivateKey, "server_pub_key": p.PublicKey, "client_ip": p.Address, "hostName": p.IP, "port": p.Port, "mtu": mtu, "allowed_ips": []string{allowed}, "persistent_keep_alive": keepalive, "HeaderProtectionKey": p.HeaderKey}
-	for line := range strings.SplitSeq(strings.TrimSpace(Parameters), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(p.parameters()), "\n") {
 		key, value, _ := strings.Cut(line, " = ")
 		lastConfig[key] = value
 	}

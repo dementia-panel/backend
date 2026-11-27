@@ -93,7 +93,7 @@ func RemoveNodeData(ctx context.Context, requestID string, tx pgx.Tx, id string,
 	}
 	var name string
 	if err := tx.QueryRow(ctx, `UPDATE nodes SET retired_at=now(),enabled=false,operation_stage='removed',error=NULL,revision=revision+1
-			WHERE id=$1 AND retired_at IS NULL AND (($2 AND status<>'installing' AND operation_stage<>'removing') OR (NOT $2 AND operation_stage='removing')) RETURNING name`, id, localOnly).Scan(&name); err != nil {
+			WHERE id=$1 AND retired_at IS NULL AND (($2 AND status<>'installing' AND operation_stage NOT IN ('removing','upgrading')) OR (NOT $2 AND operation_stage='removing')) RETURNING name`, id, localOnly).Scan(&name); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `WITH removed AS (DELETE FROM peers WHERE node_id=$1 RETURNING subscription_id,last_handshake_at)
@@ -229,6 +229,7 @@ type Node struct {
 	RestartRevision     int64      `json:"restart_revision"`
 	RestartedRevision   int64      `json:"restarted_revision"`
 	OperationStage      string     `json:"operation_stage"`
+	AgentVersion        string     `json:"agent_version"`
 	Error               *string    `json:"error"`
 }
 
@@ -238,7 +239,7 @@ type NodeMetrics struct {
 	TrafficTodayBytes int64 `json:"traffic_today_bytes"`
 }
 
-const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage"
+const nodeColumns = "id::text,name,host(ip),ssh_port,vpn_port,status,enabled,last_seen_at,revision,applied_revision,coalesce(last_seen_at>now()-interval '1 minute',false),connection_ok,connection_checked_at,restart_revision,restarted_revision,error,retired_at,endpoint_host,endpoint_port,operation_stage,agent_version"
 
 const NodeProvisionColumns = nodeColumns + ",0"
 
@@ -254,7 +255,7 @@ const NodeColumns = nodeColumns + `,
 
 func ScanNode(row pgx.Row) (Node, error) {
 	var n Node
-	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort, &n.OperationStage, &n.OnlineUserCount)
+	err := row.Scan(&n.ID, &n.Name, &n.IP, &n.SSHPort, &n.VPNPort, &n.Status, &n.Enabled, &n.LastSeen, &n.Revision, &n.AppliedRevision, &n.Online, &n.ConnectionOK, &n.ConnectionCheckedAt, &n.RestartRevision, &n.RestartedRevision, &n.Error, &n.RetiredAt, &n.EndpointHost, &n.EndpointPort, &n.OperationStage, &n.AgentVersion, &n.OnlineUserCount)
 	return n, err
 }
 func NewToken() string {

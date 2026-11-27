@@ -42,6 +42,46 @@ func TestRetryDoesNotAcceptStaleInstaller(t *testing.T) {
 	}
 }
 
+func TestNodeUpgradePreservesCredentials(t *testing.T) {
+	pool := testdb.Pool(t, store.Migrate)
+	vault, _ := vpn.NewVault(make([]byte, 32))
+	repo := store.New(pool, vault)
+	ctx := t.Context()
+	const requestID = "node-upgrade-test"
+	node, err := repo.ReserveNode(ctx, requestID, "Upgrade", "203.0.113.12", "agent-token", 22, 1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.TrustNodeHostKey(ctx, requestID, node.ID, "agent-token", "trusted-key"); err != nil {
+		t.Fatal(err)
+	}
+	private, public, _ := vpn.KeyPair()
+	if err := repo.FinishInstall(ctx, requestID, node.ID, "agent-token", public, private, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.BeginNodeUpgrade(ctx, requestID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.VerifyUpgradeHostKey(ctx, requestID, node.ID, "wrong-key"); err == nil {
+		t.Fatal("upgrade accepted an untrusted SSH host")
+	}
+	if err := repo.VerifyUpgradeHostKey(ctx, requestID, node.ID, "trusted-key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishNodeUpgrade(ctx, requestID, node.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	var storedPublic string
+	var storedHeader []byte
+	if err := pool.QueryRow(ctx, "SELECT public_key,header_key FROM nodes WHERE id=$1", node.ID).Scan(&storedPublic, &storedHeader); err != nil {
+		t.Fatal(err)
+	}
+	header, err := vault.Open(storedHeader)
+	if err != nil || storedPublic != public || header != private {
+		t.Fatal("node upgrade changed VPN credentials")
+	}
+}
+
 func TestNodeOnlineUserCounts(t *testing.T) {
 	pool := testdb.Pool(t, store.Migrate)
 	vault, _ := vpn.NewVault(make([]byte, 32))

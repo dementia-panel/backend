@@ -78,20 +78,21 @@ func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, err := repo.ReserveNode(ctx, middleware.GetReqID(ctx), "Legacy node", "192.0.2.70", NewToken(), 22, 51820)
-	if err != nil {
+	var nodeID string
+	if err := pool.QueryRow(ctx, `INSERT INTO nodes(name,ip,host_key,agent_token_hash,ssh_port,vpn_port,status)
+        VALUES('Legacy node','192.0.2.70','',$1,22,51820,'ready') RETURNING id::text`, HashToken(NewToken())).Scan(&nodeID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE nodes SET status='ready',public_key=$2,header_key=$3,applied_revision=revision,last_seen_at=now() WHERE id=$1`, node.ID, serverPublic, vault.Seal(header)); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE nodes SET public_key=$2,header_key=$3,applied_revision=revision,last_seen_at=now() WHERE id=$1`, nodeID, serverPublic, vault.Seal(header)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO peers(subscription_id,node_id,address,private_key,public_key) VALUES($1,$2,2,$3,$4)`, subID, node.ID, vault.Seal(private), public); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO peers(subscription_id,node_id,address,private_key,public_key) VALUES($1,$2,2,$3,$4)`, subID, nodeID, vault.Seal(private), public); err != nil {
 		t.Fatal(err)
 	}
 	if err := migration.Up(); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := repo.Profile(ctx, middleware.GetReqID(ctx), token, node.ID)
+	profile, err := repo.Profile(ctx, middleware.GetReqID(ctx), token, nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestDevicesMigrationPreservesLegacyKeys(t *testing.T) {
 	}
 	var encrypted []byte
 	var address int
-	if err := pool.QueryRow(ctx, `SELECT private_key,address FROM peers WHERE subscription_id=$1 AND node_id=$2`, subID, node.ID).Scan(&encrypted, &address); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT private_key,address FROM peers WHERE subscription_id=$1 AND node_id=$2`, subID, nodeID).Scan(&encrypted, &address); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := vault.Open(encrypted)

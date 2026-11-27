@@ -109,7 +109,7 @@ func (s Repository) BeginNodeRemoval(ctx context.Context, requestID string, id s
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
 	return ScanNode(s.DB.QueryRow(ctx, `UPDATE nodes SET operation_stage='removing',error=NULL
-		WHERE id=$1 AND retired_at IS NULL AND status<>'installing' AND operation_stage<>'removing' RETURNING `+NodeColumns, id))
+		WHERE id=$1 AND retired_at IS NULL AND status<>'installing' AND operation_stage NOT IN ('removing','upgrading') RETURNING `+NodeColumns, id))
 }
 func (s Repository) VerifyRemovalHostKey(ctx context.Context, requestID string, id, key string) error {
 	const op = "internal/storage/lifecycle/VerifyRemovalHostKey"

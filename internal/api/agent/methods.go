@@ -8,11 +8,18 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 )
+
+var nodeVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+func validNodeVersion(value string) bool {
+	return nodeVersionPattern.MatchString(value)
+}
 
 func (h *Handler) agentState(w http.ResponseWriter, r *http.Request) {
 	const op = "internal/api/agent/agentState"
@@ -70,10 +77,11 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Revision   int64                           `json:"revision"`
-		Handshakes map[string]int64                `json:"handshakes"`
-		Traffic    map[string]store.TrafficCounter `json:"traffic"`
-		Restarted  int64                           `json:"restarted_revision"`
+		Revision    int64                           `json:"revision"`
+		Handshakes  map[string]int64                `json:"handshakes"`
+		Traffic     map[string]store.TrafficCounter `json:"traffic"`
+		Restarted   int64                           `json:"restarted_revision"`
+		NodeVersion string                          `json:"node_version"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 14<<20)
 	if !httpx.DecodeBody(w, r, &req) {
@@ -83,7 +91,11 @@ func (h *Handler) agentAck(w http.ResponseWriter, r *http.Request) {
 		httpx.Failure(w, r, 400, "invalid revision")
 		return
 	}
-	if err := h.store.Ack(ctx, requestID, id, token, req.Revision, req.Restarted, req.Handshakes, req.Traffic); err != nil {
+	if len(req.NodeVersion) > 32 || (req.NodeVersion != "" && !validNodeVersion(req.NodeVersion)) {
+		httpx.Failure(w, r, 400, "invalid node version")
+		return
+	}
+	if err := h.store.Ack(ctx, requestID, id, token, req.Revision, req.Restarted, req.Handshakes, req.Traffic, req.NodeVersion); err != nil {
 		httpx.HandleError(w, r, err)
 		return
 	}

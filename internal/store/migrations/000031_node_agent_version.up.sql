@@ -1,0 +1,1 @@
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS agent_version text NOT NULL DEFAULT '';

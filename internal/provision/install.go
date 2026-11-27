@@ -59,7 +59,7 @@ fi
 	input.WriteString(latestBundleScript)
 	input.WriteString(`bundle=$(mktemp -d)
 trap 'rm -rf "$bundle"' EXIT
-for file in install.sh compose.yaml Dockerfile entrypoint.sh sync.py; do
+for file in install.sh compose.yaml Dockerfile entrypoint.sh sync.py update.sh; do
     curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
         --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 90 \
         "$bundle_url/$file" -o "$bundle/$file" || exit 71
@@ -68,6 +68,7 @@ printf '%s\n' `)
 	for _, value := range []string{req.PanelURL, req.ID, req.Token, strconv.Itoa(req.VPNPort), req.Name} {
 		input.WriteString(shellQuote(value) + " ")
 	}
+	input.WriteString("\"$release_tag\" ")
 	input.WriteString("| /bin/bash \"$bundle/install.sh\"\n")
 	var output keyOutput
 	progress := &stageWriter{callback: req.Progress}
@@ -91,6 +92,28 @@ printf '%s\n' `)
 		return "", "", fmt.Errorf("invalid node key response")
 	}
 	return fields[0], fields[1], nil
+}
+
+func Upgrade(ctx context.Context, req Request) error {
+	var payload strings.Builder
+	payload.WriteString("set -eu\n")
+	payload.WriteString(latestBundleScript)
+	payload.WriteString(`script=$(mktemp)
+trap 'rm -f "$script"' EXIT
+curl --proto '=https' --fail --silent --show-error --location \
+    --connect-timeout 10 --max-time 60 --retry 2 \
+    "$bundle_url/update.sh" -o "$script"
+test -s "$script"
+/bin/bash "$script"
+`)
+	if err := runSSH(ctx, req, payload.String(), io.Discard, io.Discard); err != nil {
+		var exit *ssh.ExitError
+		if errors.As(err, &exit) {
+			return errors.New("node update failed; inspect the update service journal on the VPS")
+		}
+		return err
+	}
+	return nil
 }
 func runSSH(ctx context.Context, req Request, payload string, stdout, stderr io.Writer) error {
 	if req.VerifyHostKey == nil {
@@ -217,6 +240,9 @@ if [ -f "$base/bundle/compose.yaml" ]; then
     docker compose -p dementia-node down --remove-orphans
     cd /
 fi
+systemctl disable --now dementia-node-update.timer >/dev/null 2>&1 || true
+rm -f -- /etc/systemd/system/dementia-node-update.timer /etc/systemd/system/dementia-node-update.service
+systemctl daemon-reload
 rm -rf -- "$base"
 rm -f -- /var/log/dementia-install.log /etc/apt/keyrings/dementia-docker.asc /etc/apt/sources.list.d/dementia-docker.sources
 `

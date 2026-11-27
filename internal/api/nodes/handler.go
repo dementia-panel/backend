@@ -29,3 +29,8 @@ func Register(r chi.Router, repo store.Store, publicURL string, ctx context.Cont
 	r.Delete("/nodes/{id}", h.retireNode)
 	r.Post("/nodes/actions/restart-all", h.restartAllNodes)
 }
+
+func RegisterUpgrade(r chi.Router, repo store.Store, ctx context.Context, workers *jobs.Group) {
+	h := &Handler{store: repo, context: ctx, workers: workers, installSlots: make(chan struct{}, 4)}
+	r.Post("/nodes/{id}/actions/upgrade", h.upgradeNode)
+}

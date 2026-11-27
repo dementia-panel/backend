@@ -205,6 +205,67 @@ func (h *Handler) restartNode(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.Respond(w, http.StatusAccepted, n)
 }
+
+func (h *Handler) upgradeNode(w http.ResponseWriter, r *http.Request) {
+	id := httpx.IDParam(w, r)
+	if id == "" {
+		return
+	}
+	var req struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	if !httpx.Decode(w, r, &req) {
+		return
+	}
+	if !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") {
+		httpx.Failure(w, r, http.StatusBadRequest, "invalid SSH credentials")
+		return
+	}
+	select {
+	case h.installSlots <- struct{}{}:
+	default:
+		httpx.Failure(w, r, http.StatusTooManyRequests, "all installation workers are busy")
+		return
+	}
+	requestID := middleware.GetReqID(r.Context())
+	node, err := h.store.BeginNodeUpgrade(r.Context(), requestID, id)
+	if err != nil {
+		<-h.installSlots
+		httpx.HandleError(w, r, err)
+		return
+	}
+	input := provision.Request{ID: id, IP: node.IP, SSHPort: node.SSHPort, Login: req.Login, Password: req.Password}
+	input.VerifyHostKey = func(ctx context.Context, key string) error {
+		return h.store.VerifyUpgradeHostKey(ctx, requestID, id, key)
+	}
+	finish := func(reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if err := h.store.FinishNodeUpgrade(ctx, requestID, id, reason); err != nil {
+			slog.Error("failed to save node update result", "node_id", id, sl.Err(err))
+		}
+	}
+	if !h.workers.Start("node upgrade", func() {
+		defer func() { <-h.installSlots }()
+		reason := "node update interrupted; retry update"
+		defer func() { finish(reason) }()
+		ctx, cancel := context.WithTimeout(h.context, 20*time.Minute)
+		defer cancel()
+		if err := provision.Upgrade(ctx, input); err != nil {
+			reason = err.Error()
+		} else {
+			reason = ""
+		}
+		input.Password = ""
+	}) {
+		<-h.installSlots
+		finish("backend is shutting down")
+		httpx.Failure(w, r, http.StatusServiceUnavailable, "backend is shutting down")
+		return
+	}
+	httpx.Respond(w, http.StatusAccepted, node)
+}
 func (h *Handler) checkNode(w http.ResponseWriter, r *http.Request) {
 	const op = "internal/api/nodes/checkNode"
 	requestID := middleware.GetReqID(r.Context())

@@ -52,10 +52,14 @@ func (s Repository) AgentExists(ctx context.Context, requestID string, id, token
 	)`, id, HashToken(token)).Scan(&exists)
 	return exists, err
 }
-func (s Repository) Ack(ctx context.Context, requestID string, id, token string, revision, restarted int64, handshakes map[string]int64, traffic map[string]TrafficCounter) error {
+func (s Repository) Ack(ctx context.Context, requestID string, id, token string, revision, restarted int64, handshakes map[string]int64, traffic map[string]TrafficCounter, version ...string) error {
 	const op = "internal/storage/agent/Ack"
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
+	nodeVersion := ""
+	if len(version) > 0 {
+		nodeVersion = version[0]
+	}
 	return pgx.BeginFunc(ctx, s.DB, func(tx pgx.Tx) error {
 		if len(traffic) > 0 {
 			if _, err := tx.Exec(ctx, `SELECT s.id FROM subscriptions s WHERE s.id IN (
@@ -69,8 +73,9 @@ func (s Repository) Ack(ctx context.Context, requestID string, id, token string,
 		}
 		tag, err := tx.Exec(ctx, `UPDATE nodes SET applied_revision=$3,last_seen_at=clock_timestamp(),
 		restarted_revision=greatest(restarted_revision,$4),
-		handshakes_reported_at=CASE WHEN $5 THEN clock_timestamp() ELSE handshakes_reported_at END
-		WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND retired_at IS NULL AND $3 BETWEEN applied_revision AND revision AND $4<=restart_revision`, id, HashToken(token), revision, restarted, handshakes != nil)
+		handshakes_reported_at=CASE WHEN $5 THEN clock_timestamp() ELSE handshakes_reported_at END,
+		agent_version=CASE WHEN $6<>'' THEN $6 ELSE agent_version END
+		WHERE id=$1 AND agent_token_hash=$2 AND status='ready' AND retired_at IS NULL AND $3 BETWEEN applied_revision AND revision AND $4<=restart_revision`, id, HashToken(token), revision, restarted, handshakes != nil, nodeVersion)
 		if err != nil {
 			return err
 		}

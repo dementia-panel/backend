@@ -47,13 +47,24 @@ func TestAmneziaLinkIncludesIOSRequiredAWGSettings(t *testing.T) {
 	if err := json.Unmarshal([]byte(guest.Containers[0].AWG.LastConfig), &client); err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]string{"Jc": "0", "Jmin": "0", "Jmax": "0", "S1": "32", "S2": "48", "S3": "16", "S4": "24", "H1": "14581001", "H2": "14581002", "H3": "14581003", "H4": "14581004", "HeaderProtectionKey": profile.HeaderKey} {
+	for key, want := range map[string]string{"S1": "32", "S2": "48", "S3": "16", "S4": "24", "H1": "14581001", "H2": "14581002", "H3": "14581003", "H4": "14581004", "HeaderProtectionKey": profile.HeaderKey} {
 		if got, ok := client[key].(string); !ok || got != want {
 			t.Errorf("iOS AWG setting %s = %v, want string %q", key, client[key], want)
 		}
 		if !strings.Contains(profile.Conf(), key+" = "+want+"\n") {
 			t.Errorf("native configuration is missing %s", key)
 		}
+	}
+	for _, key := range []string{"Jc", "Jmin", "Jmax"} {
+		value, ok := client[key].(string)
+		if !ok || value == "" || value == "0" || !strings.Contains(profile.Conf(), key+" = "+value+"\n") {
+			t.Errorf("invalid per-node junk parameter %s = %v", key, client[key])
+		}
+	}
+	other := profile
+	other.HeaderKey = "another-node-header-key"
+	if profile.parameters() == other.parameters() {
+		t.Fatal("different node header keys must not reuse the same junk preset")
 	}
 	if client["config"] != profile.Conf() {
 		t.Fatal("embedded native config differs from exported .conf")
