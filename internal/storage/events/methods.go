@@ -24,16 +24,23 @@ func (s Repository) FinishConnectionCheck(ctx context.Context, requestID string,
 	log := with.WithOpAndRequestID(slog.Default(), op, requestID)
 	log.Debug("repository operation")
 	rows, err := s.DB.Query(ctx, `WITH observed AS MATERIALIZED (
-		SELECT id,name,connection_ok,coalesce(last_seen_at >= $1,false) AS online
+		SELECT id,name,connection_ok,connection_lost_at,connection_alerted,
+			coalesce(last_seen_at >= $1,false) AS online
 		FROM nodes WHERE id=ANY($2::text[]::uuid[]) AND status='ready' AND retired_at IS NULL
 		AND (connection_checked_at IS NULL OR connection_checked_at < $1)
 		FOR UPDATE
 	), updated AS (
-		UPDATE nodes n SET connection_ok=o.online,connection_checked_at=statement_timestamp()
+		UPDATE nodes n SET connection_ok=o.online,connection_checked_at=statement_timestamp(),
+			connection_lost_at=CASE WHEN o.online THEN NULL ELSE coalesce(o.connection_lost_at,statement_timestamp()) END,
+			connection_alerted=CASE WHEN o.online THEN false
+				WHEN coalesce(o.connection_lost_at,statement_timestamp())<=statement_timestamp()-interval '5 minutes' THEN true
+				ELSE o.connection_alerted END
 		FROM observed o WHERE n.id=o.id RETURNING n.id
 	), changed AS (
 		SELECT o.id,o.name,o.online FROM observed o JOIN updated u USING(id)
-		WHERE o.connection_ok IS DISTINCT FROM o.online AND (o.connection_ok IS NOT NULL OR NOT o.online)
+		WHERE (o.online AND o.connection_alerted)
+			OR (NOT o.online AND NOT o.connection_alerted
+				AND o.connection_lost_at<=statement_timestamp()-interval '5 minutes')
 	), queued AS (
 		INSERT INTO events(scope,event,data)
 		SELECT 'node',CASE WHEN online THEN 'node.connection_restored' ELSE 'node.connection_lost' END,

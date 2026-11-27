@@ -82,7 +82,7 @@ func (h *Handler) createNode(w http.ResponseWriter, r *http.Request) {
 		req.SSHPort = 22
 	}
 	if req.VPNPort == 0 {
-		req.VPNPort = 51820
+		req.VPNPort = 1234
 	}
 	if ipErr != nil || ip.Zone() != "" || !ip.IsGlobalUnicast() || !validNodeName(req.Name) || !loginPattern.MatchString(req.Login) || req.Password == "" || len(req.Password) > 4096 || strings.ContainsAny(req.Password, "\r\n\x00") || req.SSHPort < 1 || req.SSHPort > 65535 || req.VPNPort < 1 || req.VPNPort > 65535 {
 		httpx.Failure(w, r, 400, "invalid node settings")

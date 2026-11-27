@@ -58,4 +58,7 @@ func TestAmneziaLinkIncludesIOSRequiredAWGSettings(t *testing.T) {
 	if client["config"] != profile.Conf() {
 		t.Fatal("embedded native config differs from exported .conf")
 	}
+	if client["mtu"] != "1280" || !strings.Contains(profile.Conf(), "MTU = 1280\n") {
+		t.Fatal("mobile MTU is missing from the exported profiles")
+	}
 }

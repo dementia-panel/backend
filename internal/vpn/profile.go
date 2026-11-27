@@ -45,7 +45,7 @@ type ClientProfile struct {
 }
 
 const dns = "1.1.1.1"
-const mtu = "1360"
+const mtu = "1280"
 const keepalive = "25"
 const allowed = "0.0.0.0/0"
 

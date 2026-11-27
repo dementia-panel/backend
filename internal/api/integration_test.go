@@ -581,6 +581,12 @@ func testSubscriptionAcrossNodes(t *testing.T, webhookEnabled bool) {
 		}
 	}
 	checkConnection(true, 0)
+	checkConnection(false, 0)
+	checkConnection(true, 0)
+	checkConnection(false, 0)
+	if _, err := pool.Exec(ctx, "UPDATE nodes SET connection_lost_at=now()-interval '6 minutes' WHERE id=ANY($1::text[]::uuid[])", []string{nodes[0].id, nodes[1].id}); err != nil {
+		t.Fatal(err)
+	}
 	checkConnection(false, 2)
 	checkConnection(false, 0)
 	checkConnection(true, 2)

@@ -24,8 +24,15 @@ func TestRetryDoesNotAcceptStaleInstaller(t *testing.T) {
 	if err := repo.FinishInstall(ctx, requestID, node.ID, "first-token", "", "", "failed"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, "UPDATE nodes SET connection_lost_at=now()-interval '10 minutes',connection_alerted=true WHERE id=$1", node.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := repo.ReserveNode(ctx, requestID, "Retry", "203.0.113.9", "second-token", 22, 51820); err != nil {
 		t.Fatal(err)
+	}
+	var reset bool
+	if err := pool.QueryRow(ctx, "SELECT connection_lost_at IS NULL AND NOT connection_alerted FROM nodes WHERE id=$1", node.ID).Scan(&reset); err != nil || !reset {
+		t.Fatalf("node retry retained previous outage: %v", err)
 	}
 	if err := repo.TrustNodeHostKey(ctx, requestID, node.ID, "first-token", "old-fingerprint"); err == nil {
 		t.Fatal("stale installer changed host key")
@@ -35,7 +42,7 @@ func TestRetryDoesNotAcceptStaleInstaller(t *testing.T) {
 	}
 }
 
-func TestNodeOnlineDeviceCounts(t *testing.T) {
+func TestNodeOnlineUserCounts(t *testing.T) {
 	pool := testdb.Pool(t, store.Migrate)
 	vault, _ := vpn.NewVault(make([]byte, 32))
 	repo := store.New(pool, vault)
@@ -89,19 +96,19 @@ func TestNodeOnlineDeviceCounts(t *testing.T) {
 		}
 		expected := map[string]int{nodes[0].ID: first, nodes[1].ID: second}
 		for _, node := range all {
-			if node.OnlineDeviceCount != expected[node.ID] {
-				t.Fatalf("node %s: %d devices, want %d", node.ID, node.OnlineDeviceCount, expected[node.ID])
+			if node.OnlineUserCount != expected[node.ID] {
+				t.Fatalf("node %s: %d users, want %d", node.ID, node.OnlineUserCount, expected[node.ID])
 			}
 			detail, err := repo.Node(ctx, requestID, node.ID)
-			if err != nil || detail.OnlineDeviceCount != expected[node.ID] {
+			if err != nil || detail.OnlineUserCount != expected[node.ID] {
 				t.Fatalf("node detail: %+v, %v", detail, err)
 			}
 		}
 	}
 	reset()
-	check(2, 2)
+	check(1, 1)
 	exec("UPDATE peers SET current_handshake_at=now()-interval '4 minutes' WHERE node_id=$1 AND device_id=$2", nodes[0].ID, device.ID)
-	check(1, 2)
+	check(1, 1)
 	for _, sql := range []string{
 		"UPDATE nodes SET handshakes_reported_at=now()-interval '2 minutes' WHERE id=$1",
 		"UPDATE nodes SET applied_revision=revision-1 WHERE id=$1",
@@ -110,7 +117,7 @@ func TestNodeOnlineDeviceCounts(t *testing.T) {
 	} {
 		reset()
 		exec(sql, nodes[0].ID)
-		check(0, 2)
+		check(0, 1)
 	}
 	for _, sql := range []string{
 		"UPDATE users SET enabled=false",
@@ -125,7 +132,7 @@ func TestNodeOnlineDeviceCounts(t *testing.T) {
 	reset()
 	name := "Renamed"
 	renamed, err := repo.UpdateNode(ctx, requestID, nodes[0].ID, &name, nil)
-	if err != nil || renamed.OnlineDeviceCount != 2 {
+	if err != nil || renamed.OnlineUserCount != 1 {
 		t.Fatalf("update returning: %+v %v", renamed, err)
 	}
 	if err := repo.DeleteDevice(ctx, requestID, user.ID, device.ID); err != nil {
